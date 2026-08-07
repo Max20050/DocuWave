@@ -1,0 +1,17 @@
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Go
+backend/vendor/
+backend/tmp/
+
+# Next.js
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db

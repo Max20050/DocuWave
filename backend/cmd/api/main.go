@@ -27,6 +27,11 @@ func main() {
 		log.Fatal("JWT_SECRET is required")
 	}
 
+	frontendURL := os.Getenv("FRONTEND_URL")
+	if frontendURL == "" {
+		frontendURL = "http://localhost:3000"
+	}
+
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
 		log.Fatalf("unable to connect to database: %v", err)
@@ -43,7 +48,16 @@ func main() {
 	}
 	log.Println("migrations applied")
 
-	authHandlers := auth.NewHandlers(auth.NewStore(pool), auth.NewTokenIssuer(jwtSecret))
+	store := auth.NewStore(pool)
+	tokenIssuer := auth.NewTokenIssuer(jwtSecret)
+	authHandlers := auth.NewHandlers(store, tokenIssuer)
+
+	googleConfig := auth.NewGoogleConfig(
+		os.Getenv("GOOGLE_CLIENT_ID"),
+		os.Getenv("GOOGLE_CLIENT_SECRET"),
+		os.Getenv("GOOGLE_REDIRECT_URL"),
+	)
+	googleHandlers := auth.NewGoogleHandlers(store, tokenIssuer, googleConfig, frontendURL)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -55,6 +69,8 @@ func main() {
 	mux.HandleFunc("POST /api/auth/register", authHandlers.Register)
 	mux.HandleFunc("POST /api/auth/login", authHandlers.Login)
 	mux.HandleFunc("GET /api/me", authHandlers.RequireAuth(authHandlers.Me))
+	mux.HandleFunc("GET /api/auth/google/login", googleHandlers.Login)
+	mux.HandleFunc("GET /api/auth/google/callback", googleHandlers.Callback)
 
 	port := os.Getenv("PORT")
 	if port == "" {

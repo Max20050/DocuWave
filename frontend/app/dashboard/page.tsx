@@ -9,11 +9,10 @@ type Profile = { id: string; email: string };
 
 export default function DashboardPage() {
   const router = useRouter();
-  const { token, isLoading, logout } = useAuth();
+  const { token, logout } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
 
   useEffect(() => {
-    if (isLoading) return;
     if (!token) {
       router.replace("/login");
       return;
@@ -26,9 +25,9 @@ export default function DashboardPage() {
         logout();
         router.replace("/login");
       });
-  }, [isLoading, token, router, logout]);
+  }, [token, router, logout]);
 
-  if (isLoading || !profile) {
+  if (!profile) {
     return (
       <div className="flex flex-1 items-center justify-center py-32">
         <p>Loading…</p>

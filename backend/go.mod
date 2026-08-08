@@ -1,13 +1,13 @@
 module github.com/Max20050/docuwave
 
-go 1.25.0
+go 1.23.0
 
 require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/jackc/pgx/v5 v5.7.2
 	github.com/joho/godotenv v1.5.1
 	golang.org/x/crypto v0.31.0
-	golang.org/x/oauth2 v0.36.0
+	golang.org/x/oauth2 v0.30.0
 )
 
 require (

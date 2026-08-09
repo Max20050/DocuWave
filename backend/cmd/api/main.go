@@ -11,6 +11,7 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/Max20050/docuwave/internal/auth"
+	"github.com/Max20050/docuwave/internal/datasource"
 	"github.com/Max20050/docuwave/internal/migrate"
 )
 
@@ -30,6 +31,11 @@ func main() {
 	frontendURL := os.Getenv("FRONTEND_URL")
 	if frontendURL == "" {
 		frontendURL = "http://localhost:3000"
+	}
+
+	encryptionKey := os.Getenv("DATASOURCE_ENCRYPTION_KEY")
+	if encryptionKey == "" {
+		log.Fatal("DATASOURCE_ENCRYPTION_KEY is required")
 	}
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
@@ -59,6 +65,13 @@ func main() {
 	)
 	googleHandlers := auth.NewGoogleHandlers(store, tokenIssuer, googleConfig, frontendURL)
 
+	encryptor, err := datasource.NewEncryptor(encryptionKey)
+	if err != nil {
+		log.Fatalf("invalid DATASOURCE_ENCRYPTION_KEY: %v", err)
+	}
+	dsStore := datasource.NewStore(pool)
+	dsHandlers := datasource.NewHandlers(dsStore, encryptor)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -71,6 +84,10 @@ func main() {
 	mux.HandleFunc("GET /api/me", authHandlers.RequireAuth(authHandlers.Me))
 	mux.HandleFunc("GET /api/auth/google/login", googleHandlers.Login)
 	mux.HandleFunc("GET /api/auth/google/callback", googleHandlers.Callback)
+	mux.HandleFunc("GET /api/datasources", authHandlers.RequireAuth(dsHandlers.List))
+	mux.HandleFunc("POST /api/datasources", authHandlers.RequireAuth(dsHandlers.Create))
+	mux.HandleFunc("POST /api/datasources/test", authHandlers.RequireAuth(dsHandlers.TestConnection))
+	mux.HandleFunc("DELETE /api/datasources/{id}", authHandlers.RequireAuth(dsHandlers.Delete))
 
 	port := os.Getenv("PORT")
 	if port == "" {

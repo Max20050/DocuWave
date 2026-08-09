@@ -59,3 +59,64 @@ export async function authFetch(
   }
   return response;
 }
+
+export type DataSourceType = "postgres" | "mysql";
+
+export type DataSource = {
+  id: string;
+  name: string;
+  type: DataSourceType;
+  host: string;
+  port: number;
+  dbName: string;
+  username: string;
+  createdAt: string;
+};
+
+export type DataSourceInput = {
+  name: string;
+  type: DataSourceType;
+  host: string;
+  port: number;
+  dbName: string;
+  username: string;
+  password: string;
+};
+
+export async function listDataSources(token: string): Promise<DataSource[]> {
+  const response = await authFetch("/api/datasources", token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function testDataSource(token: string, input: DataSourceInput): Promise<void> {
+  const response = await authFetch("/api/datasources/test", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}
+
+export async function createDataSource(token: string, input: DataSourceInput): Promise<DataSource> {
+  const response = await authFetch("/api/datasources", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function deleteDataSource(token: string, id: string): Promise<void> {
+  const response = await authFetch(`/api/datasources/${id}`, token, { method: "DELETE" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}

@@ -1,0 +1,230 @@
+package datasource
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/Max20050/docuwave/internal/auth"
+)
+
+const testConnectionTimeout = 5 * time.Second
+
+// Handlers exposes HTTP handlers for managing data sources.
+type Handlers struct {
+	store     *Store
+	encryptor *Encryptor
+}
+
+func NewHandlers(store *Store, encryptor *Encryptor) *Handlers {
+	return &Handlers{store: store, encryptor: encryptor}
+}
+
+type dataSourceRequest struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	DBName   string `json:"dbName"`
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+func (r dataSourceRequest) connectionConfig() ConnectionConfig {
+	return ConnectionConfig{
+		Host:     r.Host,
+		Port:     r.Port,
+		DBName:   r.DBName,
+		Username: r.Username,
+		Password: r.Password,
+	}
+}
+
+func (r dataSourceRequest) missingField() string {
+	switch {
+	case r.Type == "":
+		return "type"
+	case r.Host == "":
+		return "host"
+	case r.Port <= 0:
+		return "port"
+	case r.DBName == "":
+		return "dbName"
+	case r.Username == "":
+		return "username"
+	default:
+		return ""
+	}
+}
+
+type dataSourceResponse struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Type      string `json:"type"`
+	Host      string `json:"host"`
+	Port      int    `json:"port"`
+	DBName    string `json:"dbName"`
+	Username  string `json:"username"`
+	CreatedAt string `json:"createdAt"`
+}
+
+func toResponse(ds DataSource) dataSourceResponse {
+	return dataSourceResponse{
+		ID:        ds.ID,
+		Name:      ds.Name,
+		Type:      ds.Type,
+		Host:      ds.Host,
+		Port:      ds.Port,
+		DBName:    ds.DBName,
+		Username:  ds.Username,
+		CreatedAt: ds.CreatedAt.Format(time.RFC3339),
+	}
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// TestConnection handles POST /api/datasources/test, verifying reachability without persisting anything.
+func (h *Handlers) TestConnection(w http.ResponseWriter, r *http.Request) {
+	var req dataSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if field := req.missingField(); field != "" {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%s is required", field))
+		return
+	}
+
+	connector, err := NewConnector(req.Type, req.connectionConfig())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), testConnectionTimeout)
+	defer cancel()
+
+	if err := connector.TestConnection(ctx); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("could not reach data source: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// Create handles POST /api/datasources: verifies reachability, encrypts the password, and persists the source.
+func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	var req dataSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if field := req.missingField(); field != "" {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%s is required", field))
+		return
+	}
+
+	connector, err := NewConnector(req.Type, req.connectionConfig())
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), testConnectionTimeout)
+	defer cancel()
+
+	if err := connector.TestConnection(ctx); err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("could not reach data source: %v", err))
+		return
+	}
+
+	encryptedPassword, err := h.encryptor.Encrypt(req.Password)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to secure credentials")
+		return
+	}
+
+	created, err := h.store.Create(r.Context(), DataSource{
+		UserID:   userID,
+		Name:     req.Name,
+		Type:     req.Type,
+		Host:     req.Host,
+		Port:     req.Port,
+		DBName:   req.DBName,
+		Username: req.Username,
+	}, encryptedPassword)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save data source")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, toResponse(created))
+}
+
+// List handles GET /api/datasources.
+func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	sources, err := h.store.List(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list data sources")
+		return
+	}
+
+	resp := make([]dataSourceResponse, 0, len(sources))
+	for _, ds := range sources {
+		resp = append(resp, toResponse(ds))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// Delete handles DELETE /api/datasources/{id}.
+func (h *Handlers) Delete(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	if err := h.store.Delete(r.Context(), userID, id); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "data source not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to delete data source")
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}

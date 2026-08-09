@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { authFetch } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 
@@ -38,6 +39,12 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-4 py-32">
       <h1 className="text-2xl font-semibold">Welcome, {profile.email}</h1>
+      <Link
+        href="/datasources"
+        className="rounded-full border border-black/[.08] px-5 py-2 transition-colors hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
+      >
+        Manage data sources
+      </Link>
       <button
         onClick={() => {
           logout();

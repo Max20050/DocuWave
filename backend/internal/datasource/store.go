@@ -1,0 +1,85 @@
+package datasource
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// ErrNotFound is returned when a data source doesn't exist or isn't owned by the requesting user.
+var ErrNotFound = errors.New("data source not found")
+
+// DataSource is a row from the data_sources table (never carries the decrypted password).
+type DataSource struct {
+	ID        string
+	UserID    string
+	Name      string
+	Type      string
+	Host      string
+	Port      int
+	DBName    string
+	Username  string
+	CreatedAt time.Time
+}
+
+// Store persists and retrieves data sources from PostgreSQL.
+type Store struct {
+	pool *pgxpool.Pool
+}
+
+func NewStore(pool *pgxpool.Pool) *Store {
+	return &Store{pool: pool}
+}
+
+// Create inserts a new data source with an already-encrypted password, returning the saved row.
+func (s *Store) Create(ctx context.Context, ds DataSource, encryptedPassword []byte) (DataSource, error) {
+	var created DataSource
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO data_sources (user_id, name, type, host, port, db_name, username, encrypted_password)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		 RETURNING id, user_id, name, type, host, port, db_name, username, created_at`,
+		ds.UserID, ds.Name, ds.Type, ds.Host, ds.Port, ds.DBName, ds.Username, encryptedPassword,
+	).Scan(&created.ID, &created.UserID, &created.Name, &created.Type, &created.Host,
+		&created.Port, &created.DBName, &created.Username, &created.CreatedAt)
+	if err != nil {
+		return DataSource{}, err
+	}
+	return created, nil
+}
+
+// List returns all data sources owned by the given user, most recently created first.
+func (s *Store) List(ctx context.Context, userID string) ([]DataSource, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT id, user_id, name, type, host, port, db_name, username, created_at
+		 FROM data_sources WHERE user_id = $1 ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	sources := make([]DataSource, 0)
+	for rows.Next() {
+		var ds DataSource
+		if err := rows.Scan(&ds.ID, &ds.UserID, &ds.Name, &ds.Type, &ds.Host,
+			&ds.Port, &ds.DBName, &ds.Username, &ds.CreatedAt); err != nil {
+			return nil, err
+		}
+		sources = append(sources, ds)
+	}
+	return sources, rows.Err()
+}
+
+// Delete removes a data source owned by the given user. It returns ErrNotFound if no row matched.
+func (s *Store) Delete(ctx context.Context, userID, id string) error {
+	tag, err := s.pool.Exec(ctx,
+		`DELETE FROM data_sources WHERE id = $1 AND user_id = $2`, id, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

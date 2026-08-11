@@ -72,6 +72,14 @@ func main() {
 	dsStore := datasource.NewStore(pool)
 	dsHandlers := datasource.NewHandlers(dsStore, encryptor)
 
+	sheetsConfig := datasource.NewGoogleSheetsConfig(
+		os.Getenv("GOOGLE_CLIENT_ID"),
+		os.Getenv("GOOGLE_CLIENT_SECRET"),
+		os.Getenv("GOOGLE_SHEETS_REDIRECT_URL"),
+	)
+	sheetsStore := datasource.NewSheetsStore(pool)
+	sheetsHandlers := datasource.NewSheetsHandlers(dsStore, sheetsStore, encryptor, sheetsConfig, tokenIssuer, frontendURL)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -88,6 +96,10 @@ func main() {
 	mux.HandleFunc("POST /api/datasources", authHandlers.RequireAuth(dsHandlers.Create))
 	mux.HandleFunc("POST /api/datasources/test", authHandlers.RequireAuth(dsHandlers.TestConnection))
 	mux.HandleFunc("DELETE /api/datasources/{id}", authHandlers.RequireAuth(dsHandlers.Delete))
+	mux.HandleFunc("GET /api/datasources/google-sheets/login", sheetsHandlers.Login)
+	mux.HandleFunc("GET /api/datasources/google-sheets/callback", sheetsHandlers.Callback)
+	mux.HandleFunc("GET /api/datasources/google-sheets/connections/{id}/spreadsheets", authHandlers.RequireAuth(sheetsHandlers.ListSpreadsheets))
+	mux.HandleFunc("POST /api/datasources/google-sheets", authHandlers.RequireAuth(sheetsHandlers.Create))
 
 	port := os.Getenv("PORT")
 	if port == "" {

@@ -60,16 +60,18 @@ export async function authFetch(
   return response;
 }
 
-export type DataSourceType = "postgres" | "mysql";
+export type DataSourceType = "postgres" | "mysql" | "google_sheets";
 
 export type DataSource = {
   id: string;
   name: string;
   type: DataSourceType;
-  host: string;
-  port: number;
-  dbName: string;
-  username: string;
+  host?: string;
+  port?: number;
+  dbName?: string;
+  username?: string;
+  spreadsheetId?: string;
+  spreadsheetName?: string;
   createdAt: string;
 };
 
@@ -81,6 +83,18 @@ export type DataSourceInput = {
   dbName: string;
   username: string;
   password: string;
+};
+
+export type GoogleSheetsSpreadsheet = {
+  id: string;
+  name: string;
+};
+
+export type GoogleSheetsDataSourceInput = {
+  name: string;
+  connectionId: string;
+  spreadsheetId: string;
+  spreadsheetName: string;
 };
 
 export async function listDataSources(token: string): Promise<DataSource[]> {
@@ -119,4 +133,37 @@ export async function deleteDataSource(token: string, id: string): Promise<void>
   if (!response.ok) {
     throw new ApiError(response.status, await parseErrorMessage(response));
   }
+}
+
+export function googleSheetsConnectUrl(token: string): string {
+  return `${API_URL}/api/datasources/google-sheets/login?token=${encodeURIComponent(token)}`;
+}
+
+export async function listGoogleSheetsSpreadsheets(
+  token: string,
+  connectionId: string,
+): Promise<GoogleSheetsSpreadsheet[]> {
+  const response = await authFetch(
+    `/api/datasources/google-sheets/connections/${connectionId}/spreadsheets`,
+    token,
+  );
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function createGoogleSheetsDataSource(
+  token: string,
+  input: GoogleSheetsDataSourceInput,
+): Promise<DataSource> {
+  const response = await authFetch("/api/datasources/google-sheets", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
 }

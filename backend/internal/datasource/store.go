@@ -11,17 +11,23 @@ import (
 // ErrNotFound is returned when a data source doesn't exist or isn't owned by the requesting user.
 var ErrNotFound = errors.New("data source not found")
 
-// DataSource is a row from the data_sources table (never carries the decrypted password).
+// DataSource is a row from the data_sources table (never carries decrypted
+// secrets). Host/Port/DBName/Username/EncryptedPassword apply to SQL sources;
+// SpreadsheetID/SpreadsheetName/GoogleConnectionID apply to Google Sheets
+// sources. Fields that don't apply to a given Type are nil.
 type DataSource struct {
-	ID        string
-	UserID    string
-	Name      string
-	Type      string
-	Host      string
-	Port      int
-	DBName    string
-	Username  string
-	CreatedAt time.Time
+	ID                 string
+	UserID             string
+	Name               string
+	Type               string
+	Host               *string
+	Port               *int
+	DBName             *string
+	Username           *string
+	SpreadsheetID      *string
+	SpreadsheetName    *string
+	GoogleConnectionID *string
+	CreatedAt          time.Time
 }
 
 // Store persists and retrieves data sources from PostgreSQL.
@@ -33,16 +39,36 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// Create inserts a new data source with an already-encrypted password, returning the saved row.
+// Create inserts a new SQL data source with an already-encrypted password, returning the saved row.
 func (s *Store) Create(ctx context.Context, ds DataSource, encryptedPassword []byte) (DataSource, error) {
 	var created DataSource
 	err := s.pool.QueryRow(ctx,
 		`INSERT INTO data_sources (user_id, name, type, host, port, db_name, username, encrypted_password)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING id, user_id, name, type, host, port, db_name, username, created_at`,
+		 RETURNING id, user_id, name, type, host, port, db_name, username,
+			spreadsheet_id, spreadsheet_name, google_connection_id, created_at`,
 		ds.UserID, ds.Name, ds.Type, ds.Host, ds.Port, ds.DBName, ds.Username, encryptedPassword,
 	).Scan(&created.ID, &created.UserID, &created.Name, &created.Type, &created.Host,
-		&created.Port, &created.DBName, &created.Username, &created.CreatedAt)
+		&created.Port, &created.DBName, &created.Username,
+		&created.SpreadsheetID, &created.SpreadsheetName, &created.GoogleConnectionID, &created.CreatedAt)
+	if err != nil {
+		return DataSource{}, err
+	}
+	return created, nil
+}
+
+// CreateSheetsSource inserts a new Google Sheets data source, returning the saved row.
+func (s *Store) CreateSheetsSource(ctx context.Context, ds DataSource) (DataSource, error) {
+	var created DataSource
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO data_sources (user_id, name, type, spreadsheet_id, spreadsheet_name, google_connection_id)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 RETURNING id, user_id, name, type, host, port, db_name, username,
+			spreadsheet_id, spreadsheet_name, google_connection_id, created_at`,
+		ds.UserID, ds.Name, ds.Type, ds.SpreadsheetID, ds.SpreadsheetName, ds.GoogleConnectionID,
+	).Scan(&created.ID, &created.UserID, &created.Name, &created.Type, &created.Host,
+		&created.Port, &created.DBName, &created.Username,
+		&created.SpreadsheetID, &created.SpreadsheetName, &created.GoogleConnectionID, &created.CreatedAt)
 	if err != nil {
 		return DataSource{}, err
 	}
@@ -52,7 +78,8 @@ func (s *Store) Create(ctx context.Context, ds DataSource, encryptedPassword []b
 // List returns all data sources owned by the given user, most recently created first.
 func (s *Store) List(ctx context.Context, userID string) ([]DataSource, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, user_id, name, type, host, port, db_name, username, created_at
+		`SELECT id, user_id, name, type, host, port, db_name, username,
+			spreadsheet_id, spreadsheet_name, google_connection_id, created_at
 		 FROM data_sources WHERE user_id = $1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -63,7 +90,8 @@ func (s *Store) List(ctx context.Context, userID string) ([]DataSource, error) {
 	for rows.Next() {
 		var ds DataSource
 		if err := rows.Scan(&ds.ID, &ds.UserID, &ds.Name, &ds.Type, &ds.Host,
-			&ds.Port, &ds.DBName, &ds.Username, &ds.CreatedAt); err != nil {
+			&ds.Port, &ds.DBName, &ds.Username,
+			&ds.SpreadsheetID, &ds.SpreadsheetName, &ds.GoogleConnectionID, &ds.CreatedAt); err != nil {
 			return nil, err
 		}
 		sources = append(sources, ds)

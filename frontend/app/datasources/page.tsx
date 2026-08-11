@@ -1,24 +1,37 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   createDataSource,
+  createGoogleSheetsDataSource,
   deleteDataSource,
   listDataSources,
   testDataSource,
   type DataSource,
   type DataSourceInput,
+  type GoogleSheetsDataSourceInput,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { DataSourceForm } from "@/app/ui/data-source-form";
+import { GoogleSheetsConnectButton } from "@/app/ui/google-sheets-connect-button";
+import { GoogleSheetsPicker } from "@/app/ui/google-sheets-picker";
 
-export default function DataSourcesPage() {
+function sourceSubtitle(source: DataSource): string {
+  if (source.type === "google_sheets") {
+    return `Google Sheets · ${source.spreadsheetName ?? source.spreadsheetId}`;
+  }
+  return `${source.type} · ${source.host}:${source.port}/${source.dbName}`;
+}
+
+function DataSourcesContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { token, logout } = useAuth();
   const [sources, setSources] = useState<DataSource[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const sheetsConnectionId = searchParams.get("sheetsConnection");
 
   useEffect(() => {
     if (!token) {
@@ -42,6 +55,13 @@ export default function DataSourcesPage() {
     if (!token) return;
     await createDataSource(token, input);
     setSources(await listDataSources(token));
+  }
+
+  async function handleCreateSheetsSource(input: GoogleSheetsDataSourceInput) {
+    if (!token) return;
+    await createGoogleSheetsDataSource(token, input);
+    setSources(await listDataSources(token));
+    router.replace("/datasources");
   }
 
   async function handleDelete(id: string) {
@@ -83,9 +103,7 @@ export default function DataSourcesPage() {
           >
             <div>
               <p className="font-medium">{source.name}</p>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                {source.type} · {source.host}:{source.port}/{source.dbName}
-              </p>
+              <p className="text-sm text-zinc-600 dark:text-zinc-400">{sourceSubtitle(source)}</p>
             </div>
             <button onClick={() => handleDelete(source.id)} className="text-sm text-red-600 hover:underline">
               Delete
@@ -97,9 +115,36 @@ export default function DataSourcesPage() {
       {error && <p className="text-sm text-red-600">{error}</p>}
 
       <div className="flex w-full max-w-md flex-col gap-4 border-t border-black/[.1] pt-8 dark:border-white/[.15]">
-        <h2 className="text-lg font-semibold">Add a data source</h2>
+        <h2 className="text-lg font-semibold">Connect Google Sheets</h2>
+        {sheetsConnectionId ? (
+          <GoogleSheetsPicker
+            token={token}
+            connectionId={sheetsConnectionId}
+            onCreate={handleCreateSheetsSource}
+          />
+        ) : (
+          <GoogleSheetsConnectButton token={token} />
+        )}
+      </div>
+
+      <div className="flex w-full max-w-md flex-col gap-4 border-t border-black/[.1] pt-8 dark:border-white/[.15]">
+        <h2 className="text-lg font-semibold">Add a SQL data source</h2>
         <DataSourceForm onTest={handleTest} onCreate={handleCreate} />
       </div>
     </div>
+  );
+}
+
+export default function DataSourcesPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-1 items-center justify-center py-32">
+          <p>Loading…</p>
+        </div>
+      }
+    >
+      <DataSourcesContent />
+    </Suspense>
   );
 }

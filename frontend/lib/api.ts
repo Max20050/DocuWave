@@ -167,3 +167,47 @@ export async function createGoogleSheetsDataSource(
   }
   return response.json();
 }
+
+export type LLMProviderType = "claude" | "openai";
+
+export type LLMConfig = {
+  id: string;
+  provider: LLMProviderType;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type LLMConfigInput = {
+  provider: LLMProviderType;
+  apiKey: string;
+};
+
+export async function getLLMConfig(token: string): Promise<LLMConfig | null> {
+  const response = await authFetch("/api/llm-config", token);
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function saveLLMConfig(token: string, input: LLMConfigInput): Promise<LLMConfig> {
+  const response = await authFetch("/api/llm-config", token, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function deleteLLMConfig(token: string): Promise<void> {
+  const response = await authFetch("/api/llm-config", token, { method: "DELETE" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}

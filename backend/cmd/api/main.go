@@ -12,6 +12,7 @@ import (
 
 	"github.com/Max20050/docuwave/internal/auth"
 	"github.com/Max20050/docuwave/internal/datasource"
+	"github.com/Max20050/docuwave/internal/llm"
 	"github.com/Max20050/docuwave/internal/migrate"
 )
 
@@ -36,6 +37,11 @@ func main() {
 	encryptionKey := os.Getenv("DATASOURCE_ENCRYPTION_KEY")
 	if encryptionKey == "" {
 		log.Fatal("DATASOURCE_ENCRYPTION_KEY is required")
+	}
+
+	llmEncryptionKey := os.Getenv("LLM_ENCRYPTION_KEY")
+	if llmEncryptionKey == "" {
+		log.Fatal("LLM_ENCRYPTION_KEY is required")
 	}
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
@@ -80,6 +86,13 @@ func main() {
 	sheetsStore := datasource.NewSheetsStore(pool)
 	sheetsHandlers := datasource.NewSheetsHandlers(dsStore, sheetsStore, encryptor, sheetsConfig, tokenIssuer, frontendURL)
 
+	llmEncryptor, err := llm.NewEncryptor(llmEncryptionKey)
+	if err != nil {
+		log.Fatalf("invalid LLM_ENCRYPTION_KEY: %v", err)
+	}
+	llmStore := llm.NewStore(pool)
+	llmHandlers := llm.NewHandlers(llmStore, llmEncryptor)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -100,6 +113,9 @@ func main() {
 	mux.HandleFunc("GET /api/datasources/google-sheets/callback", sheetsHandlers.Callback)
 	mux.HandleFunc("GET /api/datasources/google-sheets/connections/{id}/spreadsheets", authHandlers.RequireAuth(sheetsHandlers.ListSpreadsheets))
 	mux.HandleFunc("POST /api/datasources/google-sheets", authHandlers.RequireAuth(sheetsHandlers.Create))
+	mux.HandleFunc("GET /api/llm-config", authHandlers.RequireAuth(llmHandlers.Get))
+	mux.HandleFunc("PUT /api/llm-config", authHandlers.RequireAuth(llmHandlers.Save))
+	mux.HandleFunc("DELETE /api/llm-config", authHandlers.RequireAuth(llmHandlers.Delete))
 
 	port := os.Getenv("PORT")
 	if port == "" {

@@ -33,6 +33,8 @@ type dataSourceRequest struct {
 	Password string `json:"password"`
 }
 
+func ptr[T any](v T) *T { return &v }
+
 func (r dataSourceRequest) connectionConfig() ConnectionConfig {
 	return ConnectionConfig{
 		Host:     r.Host,
@@ -61,26 +63,30 @@ func (r dataSourceRequest) missingField() string {
 }
 
 type dataSourceResponse struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	DBName    string `json:"dbName"`
-	Username  string `json:"username"`
-	CreatedAt string `json:"createdAt"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Type            string  `json:"type"`
+	Host            *string `json:"host,omitempty"`
+	Port            *int    `json:"port,omitempty"`
+	DBName          *string `json:"dbName,omitempty"`
+	Username        *string `json:"username,omitempty"`
+	SpreadsheetID   *string `json:"spreadsheetId,omitempty"`
+	SpreadsheetName *string `json:"spreadsheetName,omitempty"`
+	CreatedAt       string  `json:"createdAt"`
 }
 
 func toResponse(ds DataSource) dataSourceResponse {
 	return dataSourceResponse{
-		ID:        ds.ID,
-		Name:      ds.Name,
-		Type:      ds.Type,
-		Host:      ds.Host,
-		Port:      ds.Port,
-		DBName:    ds.DBName,
-		Username:  ds.Username,
-		CreatedAt: ds.CreatedAt.Format(time.RFC3339),
+		ID:              ds.ID,
+		Name:            ds.Name,
+		Type:            ds.Type,
+		Host:            ds.Host,
+		Port:            ds.Port,
+		DBName:          ds.DBName,
+		Username:        ds.Username,
+		SpreadsheetID:   ds.SpreadsheetID,
+		SpreadsheetName: ds.SpreadsheetName,
+		CreatedAt:       ds.CreatedAt.Format(time.RFC3339),
 	}
 }
 
@@ -169,10 +175,10 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		UserID:   userID,
 		Name:     req.Name,
 		Type:     req.Type,
-		Host:     req.Host,
-		Port:     req.Port,
-		DBName:   req.DBName,
-		Username: req.Username,
+		Host:     ptr(req.Host),
+		Port:     ptr(req.Port),
+		DBName:   ptr(req.DBName),
+		Username: ptr(req.Username),
 	}, encryptedPassword)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save data source")

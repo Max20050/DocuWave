@@ -1,14 +1,16 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import type { DataSourceInput, DataSourceType } from "@/lib/api";
+import type { DataSourceInput } from "@/lib/api";
 
-const TYPE_OPTIONS: { value: DataSourceType; label: string }[] = [
+type SqlDataSourceType = "postgres" | "mysql";
+
+const TYPE_OPTIONS: { value: SqlDataSourceType; label: string }[] = [
   { value: "postgres", label: "PostgreSQL" },
   { value: "mysql", label: "MySQL" },
 ];
 
-const DEFAULT_PORTS: Record<DataSourceType, number> = {
+const DEFAULT_PORTS: Record<SqlDataSourceType, number> = {
   postgres: 5432,
   mysql: 3306,
 };
@@ -23,7 +25,7 @@ export function DataSourceForm({
   onCreate: (input: DataSourceInput) => Promise<void>;
 }) {
   const [name, setName] = useState("");
-  const [type, setType] = useState<DataSourceType>("postgres");
+  const [type, setType] = useState<SqlDataSourceType>("postgres");
   const [host, setHost] = useState("");
   const [port, setPort] = useState(DEFAULT_PORTS.postgres);
   const [dbName, setDbName] = useState("");
@@ -92,7 +94,7 @@ export function DataSourceForm({
           id="ds-type"
           value={type}
           onChange={(e) => {
-            const nextType = e.target.value as DataSourceType;
+            const nextType = e.target.value as SqlDataSourceType;
             setType(nextType);
             setPort(DEFAULT_PORTS[nextType]);
           }}

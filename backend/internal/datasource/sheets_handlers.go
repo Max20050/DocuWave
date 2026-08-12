@@ -164,7 +164,7 @@ func (h *SheetsHandlers) ListSpreadsheets(w http.ResponseWriter, r *http.Request
 
 	client, err := h.clientForConnection(r.Context(), userID, r.PathValue("id"))
 	if err != nil {
-		h.writeConnectionError(w, err)
+		writeConnectionError(w, err)
 		return
 	}
 
@@ -226,7 +226,7 @@ func (h *SheetsHandlers) Create(w http.ResponseWriter, r *http.Request) {
 
 	token, err := h.tokenForConnection(r.Context(), userID, req.ConnectionID)
 	if err != nil {
-		h.writeConnectionError(w, err)
+		writeConnectionError(w, err)
 		return
 	}
 
@@ -245,7 +245,7 @@ func (h *SheetsHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	created, err := h.store.CreateSheetsSource(r.Context(), DataSource{
 		UserID:             userID,
 		Name:               req.Name,
-		Type:               "google_sheets",
+		Type:               sheetsSourceType,
 		SpreadsheetID:      ptr(req.SpreadsheetID),
 		SpreadsheetName:    ptr(req.SpreadsheetName),
 		GoogleConnectionID: ptr(req.ConnectionID),
@@ -258,12 +258,14 @@ func (h *SheetsHandlers) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toResponse(created))
 }
 
-func (h *SheetsHandlers) tokenForConnection(ctx context.Context, userID, connectionID string) (*oauth2.Token, error) {
-	encryptedToken, err := h.connections.GetEncryptedToken(ctx, userID, connectionID)
+// sheetsToken loads and decrypts the OAuth token behind a stored Google
+// Sheets connection owned by the given user.
+func sheetsToken(ctx context.Context, connections *SheetsStore, encryptor *Encryptor, userID, connectionID string) (*oauth2.Token, error) {
+	encryptedToken, err := connections.GetEncryptedToken(ctx, userID, connectionID)
 	if err != nil {
 		return nil, err
 	}
-	tokenJSON, err := h.encryptor.Decrypt(encryptedToken)
+	tokenJSON, err := encryptor.Decrypt(encryptedToken)
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +276,10 @@ func (h *SheetsHandlers) tokenForConnection(ctx context.Context, userID, connect
 	return &token, nil
 }
 
+func (h *SheetsHandlers) tokenForConnection(ctx context.Context, userID, connectionID string) (*oauth2.Token, error) {
+	return sheetsToken(ctx, h.connections, h.encryptor, userID, connectionID)
+}
+
 func (h *SheetsHandlers) clientForConnection(ctx context.Context, userID, connectionID string) (*http.Client, error) {
 	token, err := h.tokenForConnection(ctx, userID, connectionID)
 	if err != nil {
@@ -282,7 +288,7 @@ func (h *SheetsHandlers) clientForConnection(ctx context.Context, userID, connec
 	return h.oauthConfig.oauth.Client(ctx, token), nil
 }
 
-func (h *SheetsHandlers) writeConnectionError(w http.ResponseWriter, err error) {
+func writeConnectionError(w http.ResponseWriter, err error) {
 	if errors.Is(err, ErrConnectionNotFound) {
 		writeError(w, http.StatusNotFound, "google sheets connection not found")
 		return

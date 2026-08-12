@@ -135,6 +135,35 @@ export async function deleteDataSource(token: string, id: string): Promise<void>
   }
 }
 
+export type SchemaColumn = {
+  name: string;
+  type: string;
+};
+
+export type SchemaTable = {
+  name: string;
+  columns: SchemaColumn[];
+};
+
+// SQL sources report `tables`; Google Sheets sources report `fields` (the header row).
+export type DataSourceSchema = {
+  dataSourceId: string;
+  type: DataSourceType;
+  tables?: SchemaTable[];
+  fields?: string[];
+};
+
+export async function getDataSourceSchema(
+  token: string,
+  id: string,
+): Promise<DataSourceSchema> {
+  const response = await authFetch(`/api/datasources/${id}/schema`, token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
 export function googleSheetsConnectUrl(token: string): string {
   return `${API_URL}/api/datasources/google-sheets/login?token=${encodeURIComponent(token)}`;
 }

@@ -85,6 +85,7 @@ func main() {
 	)
 	sheetsStore := datasource.NewSheetsStore(pool)
 	sheetsHandlers := datasource.NewSheetsHandlers(dsStore, sheetsStore, encryptor, sheetsConfig, tokenIssuer, frontendURL)
+	schemaHandlers := datasource.NewSchemaHandlers(dsStore, sheetsStore, encryptor, sheetsConfig)
 
 	llmEncryptor, err := llm.NewEncryptor(llmEncryptionKey)
 	if err != nil {
@@ -109,6 +110,7 @@ func main() {
 	mux.HandleFunc("POST /api/datasources", authHandlers.RequireAuth(dsHandlers.Create))
 	mux.HandleFunc("POST /api/datasources/test", authHandlers.RequireAuth(dsHandlers.TestConnection))
 	mux.HandleFunc("DELETE /api/datasources/{id}", authHandlers.RequireAuth(dsHandlers.Delete))
+	mux.HandleFunc("GET /api/datasources/{id}/schema", authHandlers.RequireAuth(schemaHandlers.Get))
 	mux.HandleFunc("GET /api/datasources/google-sheets/login", sheetsHandlers.Login)
 	mux.HandleFunc("GET /api/datasources/google-sheets/callback", sheetsHandlers.Callback)
 	mux.HandleFunc("GET /api/datasources/google-sheets/connections/{id}/spreadsheets", authHandlers.RequireAuth(sheetsHandlers.ListSpreadsheets))

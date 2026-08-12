@@ -16,11 +16,12 @@ type ConnectionConfig struct {
 	Password string
 }
 
-// Connector verifies that a data source is reachable. Each supported source
-// type implements this behind NewConnector, so adding a new type never
-// requires changing store/handler logic.
+// Connector verifies that a data source is reachable and reports its
+// structure. Each supported source type implements this behind NewConnector,
+// so adding a new type never requires changing store/handler logic.
 type Connector interface {
 	TestConnection(ctx context.Context) error
+	Introspect(ctx context.Context) (Schema, error)
 }
 
 type connectorFactory func(cfg ConnectionConfig) Connector
@@ -32,6 +33,11 @@ var connectorRegistry = map[string]connectorFactory{
 
 // SupportedTypes lists the data source type identifiers accepted by NewConnector.
 var SupportedTypes = []string{"postgres", "mysql"}
+
+// sheetsSourceType identifies stored Google Sheets sources. They're not in
+// connectorRegistry because their connector is built from an OAuth connection
+// rather than a ConnectionConfig.
+const sheetsSourceType = "google_sheets"
 
 // NewConnector builds a Connector for the given source type.
 func NewConnector(sourceType string, cfg ConnectionConfig) (Connector, error) {

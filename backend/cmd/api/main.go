@@ -14,6 +14,7 @@ import (
 	"github.com/Max20050/docuwave/internal/datasource"
 	"github.com/Max20050/docuwave/internal/llm"
 	"github.com/Max20050/docuwave/internal/migrate"
+	"github.com/Max20050/docuwave/internal/report"
 )
 
 func main() {
@@ -85,7 +86,8 @@ func main() {
 	)
 	sheetsStore := datasource.NewSheetsStore(pool)
 	sheetsHandlers := datasource.NewSheetsHandlers(dsStore, sheetsStore, encryptor, sheetsConfig, tokenIssuer, frontendURL)
-	schemaHandlers := datasource.NewSchemaHandlers(dsStore, sheetsStore, encryptor, sheetsConfig)
+	resolver := datasource.NewResolver(dsStore, sheetsStore, encryptor, sheetsConfig)
+	schemaHandlers := datasource.NewSchemaHandlers(resolver)
 
 	llmEncryptor, err := llm.NewEncryptor(llmEncryptionKey)
 	if err != nil {
@@ -93,6 +95,9 @@ func main() {
 	}
 	llmStore := llm.NewStore(pool)
 	llmHandlers := llm.NewHandlers(llmStore, llmEncryptor)
+
+	reportStore := report.NewStore(pool)
+	reportHandlers := report.NewHandlers(reportStore, resolver, llm.NewGenerator(llmStore, llmEncryptor))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +123,11 @@ func main() {
 	mux.HandleFunc("GET /api/llm-config", authHandlers.RequireAuth(llmHandlers.Get))
 	mux.HandleFunc("PUT /api/llm-config", authHandlers.RequireAuth(llmHandlers.Save))
 	mux.HandleFunc("DELETE /api/llm-config", authHandlers.RequireAuth(llmHandlers.Delete))
+	mux.HandleFunc("POST /api/reports/generate-query", authHandlers.RequireAuth(reportHandlers.GenerateQuery))
+	mux.HandleFunc("POST /api/reports/preview", authHandlers.RequireAuth(reportHandlers.Preview))
+	mux.HandleFunc("GET /api/reports", authHandlers.RequireAuth(reportHandlers.List))
+	mux.HandleFunc("POST /api/reports", authHandlers.RequireAuth(reportHandlers.Create))
+	mux.HandleFunc("DELETE /api/reports/{id}", authHandlers.RequireAuth(reportHandlers.Delete))
 
 	port := os.Getenv("PORT")
 	if port == "" {

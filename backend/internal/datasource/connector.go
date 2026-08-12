@@ -16,12 +16,18 @@ type ConnectionConfig struct {
 	Password string
 }
 
-// Connector verifies that a data source is reachable and reports its
-// structure. Each supported source type implements this behind NewConnector,
-// so adding a new type never requires changing store/handler logic.
+// Connector verifies that a data source is reachable, reports its structure,
+// and runs read-only queries against it. Each supported source type implements
+// this behind NewConnector, so adding a new type never requires changing
+// store/handler logic.
 type Connector interface {
 	TestConnection(ctx context.Context) error
 	Introspect(ctx context.Context) (Schema, error)
+	// QueryLanguage names the dialect this source accepts, so query
+	// generation can ask an LLM for something the source will actually run.
+	QueryLanguage() string
+	// RunQuery executes a read-only query and returns at most limit rows.
+	RunQuery(ctx context.Context, query string, limit int) (QueryResult, error)
 }
 
 type connectorFactory func(cfg ConnectionConfig) Connector

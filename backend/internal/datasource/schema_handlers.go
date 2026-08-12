@@ -14,23 +14,13 @@ import (
 // catalog does real work, unlike a ping.
 const introspectTimeout = 15 * time.Second
 
-// SchemaHandlers exposes schema introspection for saved data sources. It needs
-// both the SQL and Google Sheets dependencies because a stored source may be
-// either kind.
+// SchemaHandlers exposes schema introspection for saved data sources.
 type SchemaHandlers struct {
-	store        *Store
-	connections  *SheetsStore
-	encryptor    *Encryptor
-	sheetsConfig *GoogleSheetsConfig
+	resolver *Resolver
 }
 
-func NewSchemaHandlers(store *Store, connections *SheetsStore, encryptor *Encryptor, sheetsConfig *GoogleSheetsConfig) *SchemaHandlers {
-	return &SchemaHandlers{
-		store:        store,
-		connections:  connections,
-		encryptor:    encryptor,
-		sheetsConfig: sheetsConfig,
-	}
+func NewSchemaHandlers(resolver *Resolver) *SchemaHandlers {
+	return &SchemaHandlers{resolver: resolver}
 }
 
 type schemaResponse struct {
@@ -62,23 +52,9 @@ func (h *SchemaHandlers) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ds, encryptedPassword, err := h.store.Get(r.Context(), userID, id)
+	ds, connector, err := h.resolver.Resolve(r.Context(), userID, id)
 	if err != nil {
-		if errors.Is(err, ErrNotFound) {
-			writeError(w, http.StatusNotFound, "data source not found")
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to load data source")
-		return
-	}
-
-	connector, err := h.connectorFor(r.Context(), userID, ds, encryptedPassword)
-	if err != nil {
-		if errors.Is(err, ErrConnectionNotFound) {
-			writeConnectionError(w, err)
-			return
-		}
-		writeError(w, http.StatusInternalServerError, "failed to prepare data source connection")
+		writeResolveError(w, err)
 		return
 	}
 
@@ -94,33 +70,14 @@ func (h *SchemaHandlers) Get(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, schemaResponse{DataSourceID: ds.ID, Type: ds.Type, Schema: schema})
 }
 
-// connectorFor rebuilds a Connector for an already-saved data source,
-// decrypting whichever credential that source type uses.
-func (h *SchemaHandlers) connectorFor(ctx context.Context, userID string, ds DataSource, encryptedPassword []byte) (Connector, error) {
-	if ds.Type == sheetsSourceType {
-		if ds.GoogleConnectionID == nil {
-			return nil, errors.New("google sheets data source has no connection")
-		}
-		token, err := sheetsToken(ctx, h.connections, h.encryptor, userID, *ds.GoogleConnectionID)
-		if err != nil {
-			return nil, err
-		}
-		return &googleSheetsConnector{
-			oauthConfig:   h.sheetsConfig.oauth,
-			token:         token,
-			spreadsheetID: deref(ds.SpreadsheetID),
-		}, nil
+// writeResolveError maps a Resolver failure onto an HTTP response.
+func writeResolveError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		writeError(w, http.StatusNotFound, "data source not found")
+	case errors.Is(err, ErrConnectionNotFound):
+		writeError(w, http.StatusNotFound, "google sheets connection not found")
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to prepare data source connection")
 	}
-
-	password, err := h.encryptor.Decrypt(encryptedPassword)
-	if err != nil {
-		return nil, err
-	}
-	return NewConnector(ds.Type, ConnectionConfig{
-		Host:     deref(ds.Host),
-		Port:     deref(ds.Port),
-		DBName:   deref(ds.DBName),
-		Username: deref(ds.Username),
-		Password: password,
-	})
 }

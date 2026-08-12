@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// Every source type must be able to report its own schema.
+// Every source type must be able to report its own schema and run queries.
 var (
 	_ Connector = (*postgresConnector)(nil)
 	_ Connector = (*mysqlConnector)(nil)
@@ -133,7 +133,7 @@ func TestSchemaResponseJSONShape(t *testing.T) {
 }
 
 func TestSchemaHandlerRequiresAuthentication(t *testing.T) {
-	handlers := NewSchemaHandlers(nil, nil, nil, nil)
+	handlers := NewSchemaHandlers(nil)
 
 	recorder := httptest.NewRecorder()
 	handlers.Get(recorder, httptest.NewRequest(http.MethodGet, "/api/datasources/ds-1/schema", nil))

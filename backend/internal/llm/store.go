@@ -62,6 +62,25 @@ func (s *Store) Get(ctx context.Context, userID string) (Config, error) {
 	return cfg, nil
 }
 
+// GetWithKey returns the calling user's LLM configuration along with its
+// still-encrypted API key, for the code paths that actually have to call the
+// provider. It returns ErrNotFound if none is saved.
+func (s *Store) GetWithKey(ctx context.Context, userID string) (Config, []byte, error) {
+	var cfg Config
+	var encryptedAPIKey []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, user_id, provider, created_at, updated_at, encrypted_api_key
+		 FROM llm_configs WHERE user_id = $1`, userID,
+	).Scan(&cfg.ID, &cfg.UserID, &cfg.Provider, &cfg.CreatedAt, &cfg.UpdatedAt, &encryptedAPIKey)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return Config{}, nil, ErrNotFound
+		}
+		return Config{}, nil, err
+	}
+	return cfg, encryptedAPIKey, nil
+}
+
 // Delete removes the calling user's LLM configuration. It returns ErrNotFound if none was saved.
 func (s *Store) Delete(ctx context.Context, userID string) error {
 	tag, err := s.pool.Exec(ctx, `DELETE FROM llm_configs WHERE user_id = $1`, userID)

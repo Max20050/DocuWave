@@ -240,3 +240,93 @@ export async function deleteLLMConfig(token: string): Promise<void> {
     throw new ApiError(response.status, await parseErrorMessage(response));
   }
 }
+
+export type Report = {
+  id: string;
+  dataSourceId: string;
+  dataSourceName: string;
+  name: string;
+  prompt: string;
+  query: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type GeneratedQuery = {
+  query: string;
+  // The query language the source speaks, e.g. "PostgreSQL SQL".
+  dialect: string;
+};
+
+// Cell values come straight from the data source, so anything JSON can hold.
+export type QueryPreview = {
+  columns: string[];
+  rows: unknown[][];
+  truncated: boolean;
+};
+
+export type ReportInput = {
+  name: string;
+  dataSourceId: string;
+  prompt: string;
+  query: string;
+};
+
+export async function generateReportQuery(
+  token: string,
+  dataSourceId: string,
+  prompt: string,
+): Promise<GeneratedQuery> {
+  const response = await authFetch("/api/reports/generate-query", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataSourceId, prompt }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function previewReportQuery(
+  token: string,
+  dataSourceId: string,
+  query: string,
+): Promise<QueryPreview> {
+  const response = await authFetch("/api/reports/preview", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataSourceId, query }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function listReports(token: string): Promise<Report[]> {
+  const response = await authFetch("/api/reports", token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function createReport(token: string, input: ReportInput): Promise<Report> {
+  const response = await authFetch("/api/reports", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function deleteReport(token: string, id: string): Promise<void> {
+  const response = await authFetch(`/api/reports/${id}`, token, { method: "DELETE" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}

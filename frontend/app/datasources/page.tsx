@@ -17,6 +17,7 @@ import { useAuth } from "@/lib/auth-context";
 import { DataSourceForm } from "@/app/ui/data-source-form";
 import { GoogleSheetsConnectButton } from "@/app/ui/google-sheets-connect-button";
 import { GoogleSheetsPicker } from "@/app/ui/google-sheets-picker";
+import { DataSourceSchemaView } from "@/app/ui/data-source-schema";
 
 function sourceSubtitle(source: DataSource): string {
   if (source.type === "google_sheets") {
@@ -31,6 +32,7 @@ function DataSourcesContent() {
   const { token, logout } = useAuth();
   const [sources, setSources] = useState<DataSource[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const sheetsConnectionId = searchParams.get("sheetsConnection");
 
   useEffect(() => {
@@ -69,6 +71,7 @@ function DataSourcesContent() {
     setError(null);
     try {
       await deleteDataSource(token, id);
+      if (selectedId === id) setSelectedId(null);
       setSources(await listDataSources(token));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete data source");
@@ -99,15 +102,30 @@ function DataSourcesContent() {
         {sources.map((source) => (
           <div
             key={source.id}
-            className="flex items-center justify-between rounded border border-black/[.1] px-4 py-3 dark:border-white/[.15]"
+            className="flex flex-col gap-3 rounded border border-black/[.1] px-4 py-3 dark:border-white/[.15]"
           >
-            <div>
-              <p className="font-medium">{source.name}</p>
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">{sourceSubtitle(source)}</p>
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-medium">{source.name}</p>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">{sourceSubtitle(source)}</p>
+              </div>
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => setSelectedId(selectedId === source.id ? null : source.id)}
+                  className="text-sm underline"
+                >
+                  {selectedId === source.id ? "Hide schema" : "View schema"}
+                </button>
+                <button onClick={() => handleDelete(source.id)} className="text-sm text-red-600 hover:underline">
+                  Delete
+                </button>
+              </div>
             </div>
-            <button onClick={() => handleDelete(source.id)} className="text-sm text-red-600 hover:underline">
-              Delete
-            </button>
+            {selectedId === source.id && (
+              <div className="border-t border-black/[.1] pt-3 dark:border-white/[.15]">
+                <DataSourceSchemaView key={source.id} token={token} dataSourceId={source.id} />
+              </div>
+            )}
           </div>
         ))}
       </div>

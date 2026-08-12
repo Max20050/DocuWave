@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -97,6 +98,28 @@ func (s *Store) List(ctx context.Context, userID string) ([]DataSource, error) {
 		sources = append(sources, ds)
 	}
 	return sources, rows.Err()
+}
+
+// Get returns a data source owned by the given user, along with its
+// still-encrypted password (nil for source types that don't use one). It
+// returns ErrNotFound if no row matched.
+func (s *Store) Get(ctx context.Context, userID, id string) (DataSource, []byte, error) {
+	var ds DataSource
+	var encryptedPassword []byte
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, user_id, name, type, host, port, db_name, username,
+			spreadsheet_id, spreadsheet_name, google_connection_id, created_at, encrypted_password
+		 FROM data_sources WHERE id = $1 AND user_id = $2`, id, userID,
+	).Scan(&ds.ID, &ds.UserID, &ds.Name, &ds.Type, &ds.Host,
+		&ds.Port, &ds.DBName, &ds.Username,
+		&ds.SpreadsheetID, &ds.SpreadsheetName, &ds.GoogleConnectionID, &ds.CreatedAt, &encryptedPassword)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return DataSource{}, nil, ErrNotFound
+		}
+		return DataSource{}, nil, err
+	}
+	return ds, encryptedPassword, nil
 }
 
 // Delete removes a data source owned by the given user. It returns ErrNotFound if no row matched.

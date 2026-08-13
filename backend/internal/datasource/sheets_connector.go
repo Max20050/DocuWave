@@ -154,7 +154,15 @@ func gvizCellValue(raw any, formatted string, columnType string) any {
 // RunQuery runs a visualization query against the spreadsheet's first sheet.
 // The endpoint is inherently read-only, so unlike the SQL connectors there's
 // no transaction to open.
-func (c *googleSheetsConnector) RunQuery(ctx context.Context, query string, limit int) (QueryResult, error) {
+//
+// The endpoint takes no parameters, so the compiler writes values into the query
+// itself and hands none over here; args arriving non-empty would mean values
+// that were never applied, which is worse than an error.
+func (c *googleSheetsConnector) RunQuery(ctx context.Context, query string, args []any, limit int) (QueryResult, error) {
+	if len(args) > 0 {
+		return QueryResult{}, errors.New("google sheets queries cannot take bound values")
+	}
+
 	title, err := c.firstSheetTitle(ctx)
 	if err != nil {
 		return QueryResult{}, err

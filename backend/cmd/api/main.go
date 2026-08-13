@@ -78,7 +78,6 @@ func main() {
 		log.Fatalf("invalid DATASOURCE_ENCRYPTION_KEY: %v", err)
 	}
 	dsStore := datasource.NewStore(pool)
-	dsHandlers := datasource.NewHandlers(dsStore, encryptor)
 
 	sheetsConfig := datasource.NewGoogleSheetsConfig(
 		os.Getenv("GOOGLE_CLIENT_ID"),
@@ -86,9 +85,15 @@ func main() {
 		os.Getenv("GOOGLE_SHEETS_REDIRECT_URL"),
 	)
 	sheetsStore := datasource.NewSheetsStore(pool)
-	sheetsHandlers := datasource.NewSheetsHandlers(dsStore, sheetsStore, encryptor, sheetsConfig, tokenIssuer, frontendURL)
 	resolver := datasource.NewResolver(dsStore, sheetsStore, encryptor, sheetsConfig)
-	schemaHandlers := datasource.NewSchemaHandlers(resolver)
+	// A source's structure is read when it's connected and kept, because that
+	// stored picture is what report queries are built and checked against.
+	schemas := datasource.NewSchemaProvider(resolver, datasource.NewSchemaStore(pool))
+	schemaHandlers := datasource.NewSchemaHandlers(schemas)
+
+	dsHandlers := datasource.NewHandlers(dsStore, encryptor, schemas)
+	sheetsHandlers := datasource.NewSheetsHandlers(
+		dsStore, sheetsStore, encryptor, sheetsConfig, tokenIssuer, schemas, frontendURL)
 
 	llmEncryptor, err := llm.NewEncryptor(llmEncryptionKey)
 	if err != nil {
@@ -99,7 +104,7 @@ func main() {
 
 	reportStore := report.NewStore(pool)
 	templates := template.NewRegistry(template.Starters()...)
-	reportHandlers := report.NewHandlers(reportStore, resolver, llm.NewGenerator(llmStore, llmEncryptor), templates)
+	reportHandlers := report.NewHandlers(reportStore, resolver, schemas, templates)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +123,7 @@ func main() {
 	mux.HandleFunc("POST /api/datasources/test", authHandlers.RequireAuth(dsHandlers.TestConnection))
 	mux.HandleFunc("DELETE /api/datasources/{id}", authHandlers.RequireAuth(dsHandlers.Delete))
 	mux.HandleFunc("GET /api/datasources/{id}/schema", authHandlers.RequireAuth(schemaHandlers.Get))
+	mux.HandleFunc("POST /api/datasources/{id}/schema/refresh", authHandlers.RequireAuth(schemaHandlers.Refresh))
 	mux.HandleFunc("GET /api/datasources/google-sheets/login", sheetsHandlers.Login)
 	mux.HandleFunc("GET /api/datasources/google-sheets/callback", sheetsHandlers.Callback)
 	mux.HandleFunc("GET /api/datasources/google-sheets/connections/{id}/spreadsheets", authHandlers.RequireAuth(sheetsHandlers.ListSpreadsheets))
@@ -126,7 +132,6 @@ func main() {
 	mux.HandleFunc("PUT /api/llm-config", authHandlers.RequireAuth(llmHandlers.Save))
 	mux.HandleFunc("DELETE /api/llm-config", authHandlers.RequireAuth(llmHandlers.Delete))
 	mux.HandleFunc("GET /api/report-templates", authHandlers.RequireAuth(reportHandlers.ListTemplates))
-	mux.HandleFunc("POST /api/reports/generate-query", authHandlers.RequireAuth(reportHandlers.GenerateQuery))
 	mux.HandleFunc("POST /api/reports/preview", authHandlers.RequireAuth(reportHandlers.Preview))
 	mux.HandleFunc("POST /api/reports/preview-template", authHandlers.RequireAuth(reportHandlers.PreviewTemplate))
 	mux.HandleFunc("GET /api/reports", authHandlers.RequireAuth(reportHandlers.List))

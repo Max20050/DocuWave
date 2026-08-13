@@ -14,7 +14,7 @@ import (
 
 	"github.com/Max20050/docuwave/internal/auth"
 	"github.com/Max20050/docuwave/internal/datasource"
-	"github.com/Max20050/docuwave/internal/llm"
+	"github.com/Max20050/docuwave/internal/query"
 	"github.com/Max20050/docuwave/internal/template"
 )
 
@@ -25,7 +25,6 @@ func TestHandlersRequireAuthentication(t *testing.T) {
 		handler http.HandlerFunc
 		request *http.Request
 	}{
-		"generate query":   {handlers.GenerateQuery, httptest.NewRequest(http.MethodPost, "/api/reports/generate-query", nil)},
 		"preview":          {handlers.Preview, httptest.NewRequest(http.MethodPost, "/api/reports/preview", nil)},
 		"list templates":   {handlers.ListTemplates, httptest.NewRequest(http.MethodGet, "/api/report-templates", nil)},
 		"preview template": {handlers.PreviewTemplate, httptest.NewRequest(http.MethodPost, "/api/reports/preview-template", nil)},
@@ -50,8 +49,6 @@ func TestMissingField(t *testing.T) {
 	complete := createReportRequest{
 		Name:         "Monthly sales",
 		DataSourceID: "ds-1",
-		Prompt:       "sales by region",
-		Query:        "SELECT 1",
 		TemplateID:   "tabular",
 	}
 	if got := missingField(complete); got != "" {
@@ -59,11 +56,9 @@ func TestMissingField(t *testing.T) {
 	}
 
 	tests := map[string]createReportRequest{
-		"name":         {DataSourceID: "ds-1", Prompt: "p", Query: "q", TemplateID: "tabular"},
-		"dataSourceId": {Name: "n", Prompt: "p", Query: "q", TemplateID: "tabular"},
-		"prompt":       {Name: "n", DataSourceID: "ds-1", Query: "q", TemplateID: "tabular"},
-		"query":        {Name: "n", DataSourceID: "ds-1", Prompt: "p", TemplateID: "tabular"},
-		"templateId":   {Name: "n", DataSourceID: "ds-1", Prompt: "p", Query: "q"},
+		"name":         {DataSourceID: "ds-1", TemplateID: "tabular"},
+		"dataSourceId": {Name: "n", TemplateID: "tabular"},
+		"templateId":   {Name: "n", DataSourceID: "ds-1"},
 	}
 	for want, req := range tests {
 		t.Run(want, func(t *testing.T) {
@@ -72,11 +67,19 @@ func TestMissingField(t *testing.T) {
 			}
 		})
 	}
+
+	// A description is the user's own note about the report, not an input to
+	// building it, so a report without one is fine.
+	if got := missingField(createReportRequest{Name: "n", DataSourceID: "ds-1", TemplateID: "tabular"}); got != "" {
+		t.Errorf("got %q for a report with no description, want no missing field", got)
+	}
 }
 
 // The user needs to know whether to fix their settings, retry, or rewrite
 // their description, so each generation failure gets its own status.
-func TestWriteGenerateError(t *testing.T) {
+// A query that the schema can't answer is the user's to fix, and the message has
+// to say which part — usually a column that's gone, or a stale schema.
+func TestWriteQueryError(t *testing.T) {
 	tests := []struct {
 		name       string
 		err        error
@@ -84,35 +87,41 @@ func TestWriteGenerateError(t *testing.T) {
 		wantBody   string
 	}{
 		{
-			name:       "no provider configured",
-			err:        llm.ErrNotFound,
+			name:       "a specification the schema doesn't support",
+			err:        fmt.Errorf(`%w: "profit" is not a column`, query.ErrInvalidSpec),
 			wantStatus: http.StatusBadRequest,
-			wantBody:   "settings",
+			wantBody:   "profit",
 		},
 		{
-			name:       "provider rejected the call",
-			err:        fmt.Errorf("%w: rate limited", llm.ErrProviderFailed),
-			wantStatus: http.StatusBadGateway,
-			wantBody:   "rate limited",
+			name:       "a source with no query compiler",
+			err:        fmt.Errorf("%w: mssql", query.ErrUnsupportedSource),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "mssql",
 		},
 		{
-			name:       "provider answered with nothing usable",
-			err:        llm.ErrEmptyQuery,
+			name:       "the source could not be read",
+			err:        fmt.Errorf("%w: connection refused", datasource.ErrIntrospectFailed),
 			wantStatus: http.StatusBadGateway,
-			wantBody:   "rephrasing",
+			wantBody:   "connection refused",
+		},
+		{
+			name:       "a data source that isn't there",
+			err:        datasource.ErrNotFound,
+			wantStatus: http.StatusNotFound,
+			wantBody:   "data source not found",
 		},
 		{
 			name:       "anything else is a server fault",
 			err:        errors.New("boom"),
 			wantStatus: http.StatusInternalServerError,
-			wantBody:   "failed to generate query",
+			wantBody:   "failed to prepare",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
-			writeGenerateError(recorder, tt.err)
+			writeQueryError(recorder, tt.err)
 
 			if recorder.Code != tt.wantStatus {
 				t.Errorf("got status %d, want %d", recorder.Code, tt.wantStatus)
@@ -201,10 +210,10 @@ func TestListTemplates(t *testing.T) {
 func TestPreviewTemplateRejectsIncompleteRequests(t *testing.T) {
 	handlers := NewHandlers(nil, nil, nil, template.NewRegistry(template.Starters()...))
 
+	spec := query.Spec{Table: "sales", Fields: []query.Field{{Column: "region"}}}
 	tests := map[string]previewTemplateRequest{
-		"dataSourceId": {Query: "SELECT 1", TemplateID: "tabular"},
-		"query":        {DataSourceID: "ds-1", TemplateID: "tabular"},
-		"templateId":   {DataSourceID: "ds-1", Query: "SELECT 1"},
+		"dataSourceId": {QuerySpec: spec, TemplateID: "tabular"},
+		"templateId":   {DataSourceID: "ds-1", QuerySpec: spec},
 	}
 
 	for field, req := range tests {
@@ -235,9 +244,14 @@ func TestReportResponseJSONShape(t *testing.T) {
 		DataSourceID:   "ds-1",
 		DataSourceName: "Warehouse",
 		Name:           "Monthly sales",
-		Prompt:         "sum of sales by region",
-		Query:          "SELECT region, sum(total) FROM sales GROUP BY region",
-		TemplateID:     "grouped-totals",
+		Prompt:         "sales by region, excluding refunds",
+		Query:          "SELECT \"region\" AS \"region\"\nFROM \"sales\"\nLIMIT 1000",
+		QuerySpec: query.Spec{
+			Table:  "sales",
+			Fields: []query.Field{{Column: "region"}, {Column: "total", Aggregate: query.AggregateSum}},
+			Limit:  1000,
+		},
+		TemplateID: "grouped-totals",
 		TemplateConfig: template.Config{
 			Columns: map[string][]string{"group": {"region"}},
 			Text:    map[string]string{"title": "Monthly sales"},
@@ -250,12 +264,32 @@ func TestReportResponseJSONShape(t *testing.T) {
 	}
 
 	want := `{"id":"r-1","dataSourceId":"ds-1","dataSourceName":"Warehouse","name":"Monthly sales",` +
-		`"prompt":"sum of sales by region","query":"SELECT region, sum(total) FROM sales GROUP BY region",` +
+		`"prompt":"sales by region, excluding refunds",` +
+		`"query":"SELECT \"region\" AS \"region\"\nFROM \"sales\"\nLIMIT 1000",` +
+		`"querySpec":{"table":"sales","fields":[{"column":"region"},{"column":"total","aggregate":"sum"}],"limit":1000},` +
 		`"templateId":"grouped-totals",` +
 		`"templateConfig":{"columns":{"group":["region"]},"text":{"title":"Monthly sales"}},` +
 		`"createdAt":"2026-08-12T09:30:00Z","updatedAt":"2026-08-12T09:30:00Z"}`
 	if string(body) != want {
 		t.Errorf("got %s, want %s", body, want)
+	}
+}
+
+// A report saved before query building replaced LLM-written SQL keeps its text
+// but has no specification, and nothing will run it as text.
+func TestLegacyReportsAreNotRunnable(t *testing.T) {
+	legacy := Report{
+		ID:    "r-legacy",
+		Name:  "Old report",
+		Query: "SELECT * FROM sales",
+	}
+
+	if !legacy.QuerySpec.IsZero() {
+		t.Error("a report with no specification should report itself as empty")
+	}
+	// The UI reads this to mark the report as needing a rebuild.
+	if got := toResponse(legacy).QuerySpec; len(got.Fields) != 0 {
+		t.Errorf("got %+v, want an empty specification", got)
 	}
 }
 

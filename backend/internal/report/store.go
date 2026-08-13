@@ -1,6 +1,6 @@
-// Package report manages saved report configurations: the data source a
-// report reads, the natural language description the user wrote, the query
-// generated from it, and the template its output is rendered through.
+// Package report manages saved report configurations: the data source a report
+// reads, the user's description of it, the specification its query is built
+// from, and the template its output is rendered through.
 package report
 
 import (
@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"github.com/Max20050/docuwave/internal/query"
 	"github.com/Max20050/docuwave/internal/template"
 )
 
@@ -25,9 +26,13 @@ type Report struct {
 	UserID         string
 	DataSourceID   string
 	DataSourceName string
-	Name           string
-	Prompt         string
-	Query          string
+	Name   string
+	Prompt string
+	// QuerySpec is what the report reads, structurally. Query is the SQL it last
+	// compiled to, kept so the user can see it; the spec is the source of truth
+	// and is recompiled on every run.
+	QuerySpec query.Spec
+	Query     string
 	// TemplateID names the template the report renders through, and
 	// TemplateConfig is that template's slot mapping.
 	TemplateID     string
@@ -49,21 +54,27 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // UI lists them by. The join is inner because the foreign key cascades on
 // delete, so a report always has its source.
 const selectReports = `
-	SELECT r.id, r.user_id, r.data_source_id, d.name, r.name, r.prompt, r.query,
-	       r.template_id, r.template_config, r.created_at, r.updated_at
+	SELECT r.id, r.user_id, r.data_source_id, d.name, r.name, r.prompt,
+	       r.query, r.query_spec, r.template_id, r.template_config,
+	       r.created_at, r.updated_at
 	FROM reports r
 	JOIN data_sources d ON d.id = r.data_source_id`
 
 func scanReport(row pgx.Row) (Report, error) {
 	var rep Report
-	// The slot mapping is JSONB, so it comes back as raw JSON to decode here
-	// rather than as a scannable column type.
-	var config []byte
+	// The query specification and the slot mapping are JSONB, so they come back
+	// as raw JSON to decode here rather than as scannable column types.
+	var spec, config []byte
 	err := row.Scan(&rep.ID, &rep.UserID, &rep.DataSourceID, &rep.DataSourceName,
-		&rep.Name, &rep.Prompt, &rep.Query, &rep.TemplateID, &config,
+		&rep.Name, &rep.Prompt, &rep.Query, &spec, &rep.TemplateID, &config,
 		&rep.CreatedAt, &rep.UpdatedAt)
 	if err != nil {
 		return Report{}, err
+	}
+	if len(spec) > 0 {
+		if err := json.Unmarshal(spec, &rep.QuerySpec); err != nil {
+			return Report{}, fmt.Errorf("decode query spec: %w", err)
+		}
 	}
 	if len(config) > 0 {
 		if err := json.Unmarshal(config, &rep.TemplateConfig); err != nil {
@@ -75,6 +86,10 @@ func scanReport(row pgx.Row) (Report, error) {
 
 // Create inserts a new report configuration, returning the saved row.
 func (s *Store) Create(ctx context.Context, rep Report) (Report, error) {
+	spec, err := json.Marshal(rep.QuerySpec)
+	if err != nil {
+		return Report{}, fmt.Errorf("encode query spec: %w", err)
+	}
 	config, err := json.Marshal(rep.TemplateConfig)
 	if err != nil {
 		return Report{}, fmt.Errorf("encode template config: %w", err)
@@ -82,9 +97,9 @@ func (s *Store) Create(ctx context.Context, rep Report) (Report, error) {
 
 	var id string
 	err = s.pool.QueryRow(ctx,
-		`INSERT INTO reports (user_id, data_source_id, name, prompt, query, template_id, template_config)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
-		rep.UserID, rep.DataSourceID, rep.Name, rep.Prompt, rep.Query, rep.TemplateID, config,
+		`INSERT INTO reports (user_id, data_source_id, name, prompt, query, query_spec, template_id, template_config)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		rep.UserID, rep.DataSourceID, rep.Name, rep.Prompt, rep.Query, spec, rep.TemplateID, config,
 	).Scan(&id)
 	if err != nil {
 		return Report{}, err

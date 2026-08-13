@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 )
 
 // Every source type must be able to report its own schema and run queries.
@@ -104,29 +105,34 @@ func TestHeaderFields(t *testing.T) {
 	}
 }
 
+// The report builder builds its table and column pickers from this response, and
+// shows fetchedAt so the user knows how current the picture is.
 func TestSchemaResponseJSONShape(t *testing.T) {
+	fetched := time.Date(2026, 8, 12, 9, 30, 0, 0, time.UTC)
+
 	sqlBody, err := json.Marshal(schemaResponse{
 		DataSourceID: "ds-1",
-		Type:         "postgres",
+		FetchedAt:    fetched.Format(time.RFC3339),
 		Schema:       Schema{Tables: []Table{{Name: "orders", Columns: []Column{{Name: "id", Type: "uuid"}}}}},
 	})
 	if err != nil {
 		t.Fatalf("marshal returned error: %v", err)
 	}
-	wantSQL := `{"dataSourceId":"ds-1","type":"postgres","tables":[{"name":"orders","columns":[{"name":"id","type":"uuid"}]}]}`
+	wantSQL := `{"dataSourceId":"ds-1","fetchedAt":"2026-08-12T09:30:00Z",` +
+		`"tables":[{"name":"orders","columns":[{"name":"id","type":"uuid"}]}]}`
 	if string(sqlBody) != wantSQL {
 		t.Errorf("got %s, want %s", sqlBody, wantSQL)
 	}
 
 	sheetsBody, err := json.Marshal(schemaResponse{
 		DataSourceID: "ds-2",
-		Type:         sheetsSourceType,
+		FetchedAt:    fetched.Format(time.RFC3339),
 		Schema:       Schema{Fields: []string{"Region", "Sales"}},
 	})
 	if err != nil {
 		t.Fatalf("marshal returned error: %v", err)
 	}
-	wantSheets := `{"dataSourceId":"ds-2","type":"google_sheets","fields":["Region","Sales"]}`
+	wantSheets := `{"dataSourceId":"ds-2","fetchedAt":"2026-08-12T09:30:00Z","fields":["Region","Sales"]}`
 	if string(sheetsBody) != wantSheets {
 		t.Errorf("got %s, want %s", sheetsBody, wantSheets)
 	}
@@ -135,10 +141,14 @@ func TestSchemaResponseJSONShape(t *testing.T) {
 func TestSchemaHandlerRequiresAuthentication(t *testing.T) {
 	handlers := NewSchemaHandlers(nil)
 
-	recorder := httptest.NewRecorder()
-	handlers.Get(recorder, httptest.NewRequest(http.MethodGet, "/api/datasources/ds-1/schema", nil))
+	for name, handler := range map[string]http.HandlerFunc{"get": handlers.Get, "refresh": handlers.Refresh} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler(recorder, httptest.NewRequest(http.MethodGet, "/api/datasources/ds-1/schema", nil))
 
-	if recorder.Code != http.StatusUnauthorized {
-		t.Errorf("got status %d, want %d", recorder.Code, http.StatusUnauthorized)
+			if recorder.Code != http.StatusUnauthorized {
+				t.Errorf("got status %d, want %d", recorder.Code, http.StatusUnauthorized)
+			}
+		})
 	}
 }

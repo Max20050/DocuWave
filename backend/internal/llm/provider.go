@@ -1,5 +1,11 @@
-// Package llm manages user-configured LLM providers: storing their
-// (encrypted) API keys and generating queries against the selected provider.
+// Package llm manages user-configured LLM providers: storing their (encrypted)
+// API keys and calling the selected provider.
+//
+// Report queries are no longer written by a model. They're compiled from a
+// structured specification against the data source's own schema (see
+// internal/query), so nothing a model produces is ever executed. This plumbing
+// — the per-user provider choice, the encrypted key, the provider registry —
+// stays because it's what will write the conclusions drawn from a report's data.
 package llm
 
 import (

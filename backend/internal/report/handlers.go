@@ -10,35 +10,33 @@ import (
 
 	"github.com/Max20050/docuwave/internal/auth"
 	"github.com/Max20050/docuwave/internal/datasource"
-	"github.com/Max20050/docuwave/internal/llm"
+	"github.com/Max20050/docuwave/internal/query"
 	"github.com/Max20050/docuwave/internal/template"
 )
 
-const (
-	// generateTimeout is generous because it covers introspecting the source
-	// and then waiting on the LLM.
-	generateTimeout = 90 * time.Second
-	// queryTimeout bounds a preview run against the user's own data source.
-	queryTimeout = 30 * time.Second
-)
+// queryTimeout bounds a query run against the user's own data source.
+const queryTimeout = 30 * time.Second
 
-// Handlers exposes HTTP handlers for generating queries from natural language,
-// for the templates a report can be rendered through, and for managing the
-// report configurations built from them.
+// Handlers exposes HTTP handlers for the templates a report renders through and
+// for managing report configurations.
+//
+// A report's query is never accepted as text. It arrives as a specification,
+// which is compiled here against the data source's stored schema — so the only
+// SQL that runs is SQL this server assembled.
 type Handlers struct {
 	store     *Store
 	resolver  *datasource.Resolver
-	generator *llm.Generator
+	schemas   *datasource.SchemaProvider
 	templates *template.Registry
 }
 
 func NewHandlers(
 	store *Store,
 	resolver *datasource.Resolver,
-	generator *llm.Generator,
+	schemas *datasource.SchemaProvider,
 	templates *template.Registry,
 ) *Handlers {
-	return &Handlers{store: store, resolver: resolver, generator: generator, templates: templates}
+	return &Handlers{store: store, resolver: resolver, schemas: schemas, templates: templates}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -63,13 +61,41 @@ func writeResolveError(w http.ResponseWriter, err error) {
 	}
 }
 
+// writeQueryError maps a failure to build a query onto an HTTP response. A spec
+// the schema doesn't support is the user's to fix and says so specifically,
+// because the fix is usually to pick a different column or refresh the schema.
+func writeQueryError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, query.ErrInvalidSpec), errors.Is(err, query.ErrUnsupportedSource):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, datasource.ErrIntrospectFailed):
+		writeError(w, http.StatusBadGateway, err.Error())
+	default:
+		writeResolveError(w, err)
+	}
+}
+
+// writeTemplateError maps a template failure onto an HTTP response. A missing
+// template or an unusable mapping is the caller's to fix; a render fault is ours.
+func writeTemplateError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, template.ErrUnknownTemplate), errors.Is(err, template.ErrInvalidConfig):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to render the template")
+	}
+}
+
 type reportResponse struct {
 	ID             string          `json:"id"`
 	DataSourceID   string          `json:"dataSourceId"`
 	DataSourceName string          `json:"dataSourceName"`
 	Name           string          `json:"name"`
 	Prompt         string          `json:"prompt"`
+	// Query is the SQL this server compiled from QuerySpec, shown to the user so
+	// they can see exactly what their report reads. It is never accepted back.
 	Query          string          `json:"query"`
+	QuerySpec      query.Spec      `json:"querySpec"`
 	TemplateID     string          `json:"templateId"`
 	TemplateConfig template.Config `json:"templateConfig"`
 	CreatedAt      string          `json:"createdAt"`
@@ -84,11 +110,56 @@ func toResponse(rep Report) reportResponse {
 		Name:           rep.Name,
 		Prompt:         rep.Prompt,
 		Query:          rep.Query,
+		QuerySpec:      rep.QuerySpec,
 		TemplateID:     rep.TemplateID,
 		TemplateConfig: rep.TemplateConfig,
 		CreatedAt:      rep.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:      rep.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+// runnable is a compiled query with everything needed to run it.
+type runnable struct {
+	connector datasource.Connector
+	compiled  query.Compiled
+	// language names the query language, for labelling the SQL in the UI.
+	language string
+}
+
+// prepare resolves a data source, loads the schema read when it was connected,
+// and compiles the specification against it. Every query in this package is
+// built here and nowhere else.
+func (h *Handlers) prepare(
+	ctx context.Context,
+	userID, dataSourceID string,
+	spec query.Spec,
+) (runnable, error) {
+	source, connector, err := h.resolver.Resolve(ctx, userID, dataSourceID)
+	if err != nil {
+		return runnable{}, err
+	}
+
+	dialect, err := query.DialectFor(source.Type)
+	if err != nil {
+		return runnable{}, err
+	}
+
+	schema, _, err := h.schemas.Schema(ctx, userID, dataSourceID)
+	if err != nil {
+		return runnable{}, err
+	}
+
+	compiled, err := query.Compile(spec, schema, dialect, time.Now())
+	if err != nil {
+		return runnable{}, err
+	}
+
+	return runnable{connector: connector, compiled: compiled, language: connector.QueryLanguage()}, nil
+}
+
+// run executes a prepared query.
+func (r runnable) run(ctx context.Context, limit int) (datasource.QueryResult, error) {
+	return r.connector.RunQuery(ctx, r.compiled.Text, r.compiled.Args, limit)
 }
 
 // ListTemplates handles GET /api/report-templates: the templates a report can be
@@ -102,20 +173,76 @@ func (h *Handlers) ListTemplates(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, h.templates.List())
 }
 
-// writeTemplateError maps a template failure onto an HTTP response. A missing
-// template or an unusable mapping is the caller's to fix; a render fault is ours.
-func writeTemplateError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, template.ErrUnknownTemplate), errors.Is(err, template.ErrInvalidConfig):
-		writeError(w, http.StatusBadRequest, err.Error())
-	default:
-		writeError(w, http.StatusInternalServerError, "failed to render the template")
+type previewRequest struct {
+	DataSourceID string     `json:"dataSourceId"`
+	QuerySpec    query.Spec `json:"querySpec"`
+}
+
+type previewResponse struct {
+	datasource.QueryResult
+	// SQL is what the specification compiled to, so the user can see what their
+	// report actually reads.
+	SQL      string `json:"sql"`
+	Language string `json:"language"`
+}
+
+// previewLimit keeps a preview to a page of rows without ever showing more than
+// the report itself would cover.
+func previewLimit(spec query.Spec) int {
+	if spec.Limit > 0 && spec.Limit < datasource.PreviewRowLimit {
+		return spec.Limit
 	}
+	return datasource.PreviewRowLimit
+}
+
+// Preview handles POST /api/reports/preview: it compiles the specification,
+// runs it read-only, and returns the first rows along with the SQL it built, so
+// the user can see what the report will contain before saving it.
+func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	var req previewRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.DataSourceID == "" {
+		writeError(w, http.StatusBadRequest, "dataSourceId is required")
+		return
+	}
+
+	prepared, err := h.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
+	if err != nil {
+		writeQueryError(w, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
+	defer cancel()
+
+	result, err := prepared.run(ctx, previewLimit(req.QuerySpec))
+	if err != nil {
+		// The query is ours, so a failure here is the source rejecting it —
+		// usually an aggregate over a column that doesn't hold numbers. Its own
+		// message is the useful one.
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("query failed: %v", err))
+		return
+	}
+
+	writeJSON(w, http.StatusOK, previewResponse{
+		QueryResult: result,
+		SQL:         prepared.compiled.Text,
+		Language:    prepared.language,
+	})
 }
 
 type previewTemplateRequest struct {
 	DataSourceID   string          `json:"dataSourceId"`
-	Query          string          `json:"query"`
+	QuerySpec      query.Spec      `json:"querySpec"`
 	TemplateID     string          `json:"templateId"`
 	TemplateConfig template.Config `json:"templateConfig"`
 }
@@ -124,10 +251,10 @@ type previewTemplateResponse struct {
 	HTML string `json:"html"`
 }
 
-// PreviewTemplate handles POST /api/reports/preview-template: it runs the query,
-// renders the chosen template with the rows it returned, and hands back the
-// document. The preview is the same rendering path the delivered report uses, so
-// what the user approves is what they'll get.
+// PreviewTemplate handles POST /api/reports/preview-template: it runs the
+// compiled query, renders the chosen template with the rows it returned, and
+// hands back the document. The preview is the same rendering path the delivered
+// report uses, so what the user approves is what they'll get.
 func (h *Handlers) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.UserIDFromContext(r.Context())
 	if !ok {
@@ -144,24 +271,21 @@ func (h *Handlers) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
 	case req.DataSourceID == "":
 		writeError(w, http.StatusBadRequest, "dataSourceId is required")
 		return
-	case req.Query == "":
-		writeError(w, http.StatusBadRequest, "query is required")
-		return
 	case req.TemplateID == "":
 		writeError(w, http.StatusBadRequest, "templateId is required")
 		return
 	}
 
-	_, connector, err := h.resolver.Resolve(r.Context(), userID, req.DataSourceID)
+	prepared, err := h.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
 	if err != nil {
-		writeResolveError(w, err)
+		writeQueryError(w, err)
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
 	defer cancel()
 
-	result, err := connector.RunQuery(ctx, req.Query, datasource.PreviewRowLimit)
+	result, err := prepared.run(ctx, previewLimit(req.QuerySpec))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("query failed: %v", err))
 		return
@@ -180,144 +304,20 @@ func (h *Handlers) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, previewTemplateResponse{HTML: string(html)})
 }
 
-type generateQueryRequest struct {
-	DataSourceID string `json:"dataSourceId"`
-	Prompt       string `json:"prompt"`
-}
-
-type generateQueryResponse struct {
-	Query   string `json:"query"`
-	Dialect string `json:"dialect"`
-}
-
-// GenerateQuery handles POST /api/reports/generate-query: it reads the data
-// source's schema, hands it to the user's LLM along with their description,
-// and returns the query for them to review before saving.
-func (h *Handlers) GenerateQuery(w http.ResponseWriter, r *http.Request) {
-	userID, ok := auth.UserIDFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
-
-	var req generateQueryRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.DataSourceID == "" {
-		writeError(w, http.StatusBadRequest, "dataSourceId is required")
-		return
-	}
-	if req.Prompt == "" {
-		writeError(w, http.StatusBadRequest, "prompt is required")
-		return
-	}
-
-	_, connector, err := h.resolver.Resolve(r.Context(), userID, req.DataSourceID)
-	if err != nil {
-		writeResolveError(w, err)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), generateTimeout)
-	defer cancel()
-
-	schema, err := connector.Introspect(ctx)
-	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("could not read schema from data source: %v", err))
-		return
-	}
-
-	dialect := connector.QueryLanguage()
-	query, err := h.generator.GenerateQuery(ctx, userID, llm.QueryRequest{
-		Dialect: dialect,
-		Schema:  schema.Describe(),
-		Prompt:  req.Prompt,
-	})
-	if err != nil {
-		writeGenerateError(w, err)
-		return
-	}
-
-	writeJSON(w, http.StatusOK, generateQueryResponse{Query: query, Dialect: dialect})
-}
-
-// writeGenerateError separates "you haven't set this up" from "the provider
-// said no", so the user knows whether to fix their settings or retry.
-func writeGenerateError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, llm.ErrNotFound):
-		writeError(w, http.StatusBadRequest, "no LLM provider configured — add one in settings first")
-	case errors.Is(err, llm.ErrEmptyQuery):
-		writeError(w, http.StatusBadGateway, "the LLM did not return a query; try rephrasing your description")
-	case errors.Is(err, llm.ErrProviderFailed):
-		writeError(w, http.StatusBadGateway, err.Error())
-	default:
-		writeError(w, http.StatusInternalServerError, "failed to generate query")
-	}
-}
-
-type previewRequest struct {
-	DataSourceID string `json:"dataSourceId"`
-	Query        string `json:"query"`
-}
-
-// Preview handles POST /api/reports/preview: it runs the (possibly edited)
-// query against the source read-only and returns the first rows, so the user
-// can see what the report will contain before saving it.
-func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
-	userID, ok := auth.UserIDFromContext(r.Context())
-	if !ok {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return
-	}
-
-	var req previewRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.DataSourceID == "" {
-		writeError(w, http.StatusBadRequest, "dataSourceId is required")
-		return
-	}
-	if req.Query == "" {
-		writeError(w, http.StatusBadRequest, "query is required")
-		return
-	}
-
-	_, connector, err := h.resolver.Resolve(r.Context(), userID, req.DataSourceID)
-	if err != nil {
-		writeResolveError(w, err)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
-	defer cancel()
-
-	result, err := connector.RunQuery(ctx, req.Query, datasource.PreviewRowLimit)
-	if err != nil {
-		// A rejected query is the user's to fix, not a server fault, so this
-		// reports the source's own message back to them.
-		writeError(w, http.StatusBadRequest, fmt.Sprintf("query failed: %v", err))
-		return
-	}
-
-	writeJSON(w, http.StatusOK, result)
-}
-
 type createReportRequest struct {
-	Name           string          `json:"name"`
-	DataSourceID   string          `json:"dataSourceId"`
+	Name         string `json:"name"`
+	DataSourceID string `json:"dataSourceId"`
+	// Prompt is the user's own description of the report. It no longer builds the
+	// query; it records intent, and is what a future summary of the report's
+	// data would be written against.
 	Prompt         string          `json:"prompt"`
-	Query          string          `json:"query"`
+	QuerySpec      query.Spec      `json:"querySpec"`
 	TemplateID     string          `json:"templateId"`
 	TemplateConfig template.Config `json:"templateConfig"`
 }
 
-// Create handles POST /api/reports, storing the reviewed query alongside the
-// rest of the report configuration.
+// Create handles POST /api/reports, storing the query specification alongside
+// the rest of the report configuration.
 func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	userID, ok := auth.UserIDFromContext(r.Context())
 	if !ok {
@@ -343,10 +343,13 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Resolving proves the source exists and belongs to this user before the
-	// insert would fail on a foreign key.
-	if _, _, err := h.resolver.Resolve(r.Context(), userID, req.DataSourceID); err != nil {
-		writeResolveError(w, err)
+	// Compiling proves the specification is one this source can answer, and
+	// resolving the source along the way proves it belongs to this user. The SQL
+	// is stored for the user to read; it's recompiled from the spec on every run,
+	// so a relative date window stays relative.
+	prepared, err := h.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
+	if err != nil {
+		writeQueryError(w, err)
 		return
 	}
 
@@ -355,7 +358,8 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		DataSourceID:   req.DataSourceID,
 		Name:           req.Name,
 		Prompt:         req.Prompt,
-		Query:          req.Query,
+		Query:          prepared.compiled.Text,
+		QuerySpec:      req.QuerySpec,
 		TemplateID:     req.TemplateID,
 		TemplateConfig: req.TemplateConfig,
 	})
@@ -367,16 +371,15 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, toResponse(created))
 }
 
+// missingField names the first required field a request left empty. The query
+// specification isn't checked here — compiling it against the schema reports far
+// more usefully than "querySpec is required" could.
 func missingField(req createReportRequest) string {
 	switch {
 	case req.Name == "":
 		return "name"
 	case req.DataSourceID == "":
 		return "dataSourceId"
-	case req.Prompt == "":
-		return "prompt"
-	case req.Query == "":
-		return "query"
 	case req.TemplateID == "":
 		return "templateId"
 	default:

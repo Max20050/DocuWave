@@ -23,11 +23,14 @@ type ConnectionConfig struct {
 type Connector interface {
 	TestConnection(ctx context.Context) error
 	Introspect(ctx context.Context) (Schema, error)
-	// QueryLanguage names the dialect this source accepts, so query
-	// generation can ask an LLM for something the source will actually run.
+	// QueryLanguage names the language this source speaks, which is what the UI
+	// labels a compiled query with.
 	QueryLanguage() string
-	// RunQuery executes a read-only query and returns at most limit rows.
-	RunQuery(ctx context.Context, query string, limit int) (QueryResult, error)
+	// RunQuery executes a read-only query and returns at most limit rows. The
+	// query is built by the query package from a structured specification, and
+	// args are the values its placeholders stand for — no caller-supplied text
+	// reaches here.
+	RunQuery(ctx context.Context, query string, args []any, limit int) (QueryResult, error)
 }
 
 type connectorFactory func(cfg ConnectionConfig) Connector

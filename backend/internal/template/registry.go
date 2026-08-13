@@ -74,3 +74,17 @@ func (r *Registry) Render(id string, data Data, cfg Config) ([]byte, error) {
 	}
 	return t.Render(data, cfg)
 }
+
+// Document resolves a template and projects the document it would render, as
+// the structure the file formats are built from. It gates on the same mapping
+// check as Render, so a report that renders is a report that downloads.
+func (r *Registry) Document(id string, data Data, cfg Config) (Doc, error) {
+	t, err := r.Get(id)
+	if err != nil {
+		return Doc{}, err
+	}
+	if err := Validate(t, cfg, data.Columns); err != nil {
+		return Doc{}, err
+	}
+	return DocumentOf(t, data, cfg), nil
+}

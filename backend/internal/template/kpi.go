@@ -56,6 +56,13 @@ type tile struct {
 	Value string
 }
 
+// kpiUnmappedNote is printed while no column has been mapped to a metric, which
+// is the state a preview starts in.
+const kpiUnmappedNote = "Map at least one column to a headline metric."
+
+// breakdownTitle heads the optional table under the tiles.
+const breakdownTitle = "Breakdown"
+
 var kpiBody = mustDocument(`
 {{if .Tiles}}
 <section>
@@ -63,24 +70,33 @@ var kpiBody = mustDocument(`
 <div class="tile"><p class="tile-label">{{.Label}}</p><p class="tile-value">{{.Value}}</p></div>{{end}}
 </div>
 </section>
-{{else}}<p class="empty">Map at least one column to a headline metric.</p>{{end}}
+{{else}}<p class="empty">` + kpiUnmappedNote + `</p>{{end}}
 {{if .Columns}}
 <section>
-<h2 class="section-title">Breakdown</h2>
+<h2 class="section-title">` + breakdownTitle + `</h2>
 <table>
 <thead><tr>{{range .Columns}}<th class="{{.Class}}">{{.Name}}</th>{{end}}</tr></thead>
 <tbody>{{range .Rows}}<tr>{{range .}}<td class="{{.Class}}">{{.Text}}</td>{{end}}</tr>{{end}}</tbody>
 </table>
-{{if not .Rows}}<p class="empty">The query returned no rows.</p>{{end}}
+{{if not .Rows}}<p class="empty">` + noRowsNote + `</p>{{end}}
 </section>
 {{end}}
 `)
 
+// totals sums each metric across every row, which is the figure a tile shows.
+func (t KPISummary) totals(data Data, metrics []column) []float64 {
+	totals := make([]float64, 0, len(metrics))
+	for _, metric := range metrics {
+		totals = append(totals, sum(data.Rows, metric.Index))
+	}
+	return totals
+}
+
 func (t KPISummary) Render(data Data, cfg Config) ([]byte, error) {
 	metrics := data.resolve(cfg.ColumnsFor("metrics"))
 	tiles := make([]tile, 0, len(metrics))
-	for _, metric := range metrics {
-		tiles = append(tiles, tile{Label: metric.Name, Value: formatNumber(sum(data.Rows, metric.Index))})
+	for i, total := range t.totals(data, metrics) {
+		tiles = append(tiles, tile{Label: metrics[i].Name, Value: formatNumber(total)})
 	}
 
 	columns := data.resolve(cfg.ColumnsFor("columns"))
@@ -98,4 +114,33 @@ func (t KPISummary) Render(data Data, cfg Config) ([]byte, error) {
 		Columns: columns,
 		Rows:    rows,
 	})
+}
+
+func (t KPISummary) Document(data Data, cfg Config) Doc {
+	doc := Doc{
+		Title:       cfg.TextFor("title"),
+		Footer:      footerText(data, cfg.TextFor("note")),
+		GeneratedAt: data.GeneratedAt,
+	}
+
+	metrics := data.resolve(cfg.ColumnsFor("metrics"))
+	headline := Block{}
+	for i, total := range t.totals(data, metrics) {
+		headline.Tiles = append(headline.Tiles, Tile{Label: metrics[i].Name, Value: computedValue(total)})
+	}
+	if len(headline.Tiles) == 0 {
+		headline.Note = kpiUnmappedNote
+	}
+	doc.Blocks = append(doc.Blocks, headline)
+
+	// The supporting table is optional, so it only becomes a block once the user
+	// has mapped columns to it.
+	if columns := data.resolve(cfg.ColumnsFor("columns")); len(columns) > 0 {
+		doc.Blocks = append(doc.Blocks, Block{
+			Title: breakdownTitle,
+			Table: tableFrom(columns, data.Rows),
+			Note:  emptyNote(data.Rows),
+		})
+	}
+	return doc
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Max20050/docuwave/internal/query"
+	"github.com/Max20050/docuwave/internal/render"
 	"github.com/Max20050/docuwave/internal/template"
 )
 
@@ -37,8 +38,11 @@ type Report struct {
 	// TemplateConfig is that template's slot mapping.
 	TemplateID     string
 	TemplateConfig template.Config
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// Formats are the files the report is delivered as. A report always has at
+	// least one.
+	Formats   []render.Format
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 // Store persists and retrieves report configurations from PostgreSQL.
@@ -55,7 +59,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 // delete, so a report always has its source.
 const selectReports = `
 	SELECT r.id, r.user_id, r.data_source_id, d.name, r.name, r.prompt,
-	       r.query, r.query_spec, r.template_id, r.template_config,
+	       r.query, r.query_spec, r.template_id, r.template_config, r.formats,
 	       r.created_at, r.updated_at
 	FROM reports r
 	JOIN data_sources d ON d.id = r.data_source_id`
@@ -65,11 +69,20 @@ func scanReport(row pgx.Row) (Report, error) {
 	// The query specification and the slot mapping are JSONB, so they come back
 	// as raw JSON to decode here rather than as scannable column types.
 	var spec, config []byte
+	// Formats are stored as a text array; the format names are this server's, so
+	// they're read back as plain strings and re-checked.
+	var formats []string
 	err := row.Scan(&rep.ID, &rep.UserID, &rep.DataSourceID, &rep.DataSourceName,
-		&rep.Name, &rep.Prompt, &rep.Query, &spec, &rep.TemplateID, &config,
+		&rep.Name, &rep.Prompt, &rep.Query, &spec, &rep.TemplateID, &config, &formats,
 		&rep.CreatedAt, &rep.UpdatedAt)
 	if err != nil {
 		return Report{}, err
+	}
+	// A format this build doesn't know would be one removed from the registry
+	// while a report still asked for it, so the report is reported as broken
+	// rather than quietly delivered in fewer formats than configured.
+	if rep.Formats, err = render.ParseFormats(formats); err != nil {
+		return Report{}, fmt.Errorf("report %s: %w", rep.ID, err)
 	}
 	if len(spec) > 0 {
 		if err := json.Unmarshal(spec, &rep.QuerySpec); err != nil {
@@ -97,9 +110,10 @@ func (s *Store) Create(ctx context.Context, rep Report) (Report, error) {
 
 	var id string
 	err = s.pool.QueryRow(ctx,
-		`INSERT INTO reports (user_id, data_source_id, name, prompt, query, query_spec, template_id, template_config)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+		`INSERT INTO reports (user_id, data_source_id, name, prompt, query, query_spec, template_id, template_config, formats)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
 		rep.UserID, rep.DataSourceID, rep.Name, rep.Prompt, rep.Query, spec, rep.TemplateID, config,
+		render.Strings(rep.Formats),
 	).Scan(&id)
 	if err != nil {
 		return Report{}, err

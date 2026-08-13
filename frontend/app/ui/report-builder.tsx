@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import {
+  REPORT_FORMATS,
   generateReportQuery,
   listReportTemplates,
   previewReportQuery,
   previewReportTemplate,
   type DataSource,
   type QueryPreview,
+  type ReportFormat,
   type ReportInput,
   type ReportTemplate,
   type TemplateConfig,
@@ -27,6 +29,54 @@ function errorMessage(err: unknown, fallback: string): string {
 
 function sameColumns(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((column, index) => column === right[index]);
+}
+
+// FormatPicker chooses the files the report is delivered as. A report needs at
+// least one, so the last one checked can't be unchecked — the save button would
+// only refuse it a step later.
+function FormatPicker({
+  formats,
+  onChange,
+}: {
+  formats: ReportFormat[];
+  onChange: (formats: ReportFormat[]) => void;
+}) {
+  function toggle(format: ReportFormat, checked: boolean) {
+    onChange(
+      checked
+        ? REPORT_FORMATS.map((option) => option.value).filter(
+            (value) => value === format || formats.includes(value),
+          )
+        : formats.filter((value) => value !== format),
+    );
+  }
+
+  return (
+    <fieldset className="flex flex-col gap-2">
+      <legend className="text-sm font-medium">Output formats</legend>
+      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+        Every format you pick is generated each time the report runs.
+      </p>
+      {REPORT_FORMATS.map((option) => {
+        const checked = formats.includes(option.value);
+        return (
+          <label key={option.value} className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={checked}
+              disabled={checked && formats.length === 1}
+              onChange={(e) => toggle(option.value, e.target.checked)}
+              className="mt-1"
+            />
+            <span>
+              <span className="font-medium">{option.label}</span>{" "}
+              <span className="text-zinc-600 dark:text-zinc-400">{option.description}</span>
+            </span>
+          </label>
+        );
+      })}
+    </fieldset>
+  );
 }
 
 // ReportBuilder walks the user from a natural language description to a saved
@@ -49,6 +99,10 @@ export function ReportBuilder({
   const [dialect, setDialect] = useState("");
   const [preview, setPreview] = useState<QueryPreview | null>(null);
   const [name, setName] = useState("");
+
+  // A report is a PDF unless the user says otherwise, which is what a report
+  // was before it could be anything else.
+  const [formats, setFormats] = useState<ReportFormat[]>(["pdf"]);
 
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
@@ -159,12 +213,13 @@ export function ReportBuilder({
     setSaveError(null);
     setSaving(true);
     try {
-      await onCreate({ name, dataSourceId, prompt, query, templateId, templateConfig });
+      await onCreate({ name, dataSourceId, prompt, query, templateId, templateConfig, formats });
       setName("");
       setPrompt("");
       setQuery("");
       setDialect("");
       setPreview(null);
+      setFormats(["pdf"]);
       resetTemplateState();
       setSaved(true);
     } catch (err) {
@@ -301,6 +356,8 @@ export function ReportBuilder({
             </div>
           )}
 
+          <FormatPicker formats={formats} onChange={setFormats} />
+
           <div className="flex flex-col gap-1">
             <label htmlFor="report-name" className="text-sm font-medium">
               Report name
@@ -316,7 +373,13 @@ export function ReportBuilder({
             <button
               type="button"
               onClick={handleSave}
-              disabled={saving || name.trim() === "" || query.trim() === "" || templateId === ""}
+              disabled={
+                saving ||
+                name.trim() === "" ||
+                query.trim() === "" ||
+                templateId === "" ||
+                formats.length === 0
+              }
               className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
             >
               {saving ? "Saving…" : "Save report"}

@@ -104,7 +104,10 @@ func main() {
 
 	reportStore := report.NewStore(pool)
 	templates := template.NewRegistry(template.Starters()...)
-	reportHandlers := report.NewHandlers(reportStore, resolver, schemas, templates)
+	// The runner is the whole report pipeline — query, template, files — and is
+	// what scheduled and on-demand delivery will run as well.
+	reportRunner := report.NewRunner(resolver, schemas, templates)
+	reportHandlers := report.NewHandlers(reportStore, reportRunner, templates)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -136,6 +139,7 @@ func main() {
 	mux.HandleFunc("POST /api/reports/preview-template", authHandlers.RequireAuth(reportHandlers.PreviewTemplate))
 	mux.HandleFunc("GET /api/reports", authHandlers.RequireAuth(reportHandlers.List))
 	mux.HandleFunc("POST /api/reports", authHandlers.RequireAuth(reportHandlers.Create))
+	mux.HandleFunc("GET /api/reports/{id}/download", authHandlers.RequireAuth(reportHandlers.Download))
 	mux.HandleFunc("DELETE /api/reports/{id}", authHandlers.RequireAuth(reportHandlers.Delete))
 
 	port := os.Getenv("PORT")
@@ -158,6 +162,9 @@ func withCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		// A downloaded report is fetched with the session's token and saved by
+		// the browser, so the filename the server chose has to be readable.
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Disposition")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return

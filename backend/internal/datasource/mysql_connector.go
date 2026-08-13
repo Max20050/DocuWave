@@ -66,3 +66,66 @@ func (c *mysqlConnector) Introspect(ctx context.Context) (Schema, error) {
 
 	return Schema{Tables: groupColumns(columns)}, nil
 }
+
+func (c *mysqlConnector) QueryLanguage() string {
+	return "MySQL SQL"
+}
+
+// RunQuery executes the query inside a read-only transaction. The query text
+// comes from an LLM, so the transaction — not the query text — is what
+// guarantees it can't modify the user's database.
+func (c *mysqlConnector) RunQuery(ctx context.Context, query string, limit int) (QueryResult, error) {
+	db, err := c.open()
+	if err != nil {
+		return QueryResult{}, err
+	}
+	defer db.Close()
+
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return QueryResult{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	rows, err := tx.QueryContext(ctx, query)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	defer rows.Close()
+
+	columns, err := rows.Columns()
+	if err != nil {
+		return QueryResult{}, err
+	}
+
+	result := QueryResult{Columns: columns, Rows: make([][]any, 0)}
+	if result.Columns == nil {
+		result.Columns = make([]string, 0)
+	}
+
+	for rows.Next() {
+		if len(result.Rows) == limit {
+			result.Truncated = true
+			break
+		}
+		// Scan needs a pointer per column; database/sql fills *any with the
+		// driver's own type, which normalizeValue then makes JSON-safe.
+		values := make([]any, len(columns))
+		targets := make([]any, len(columns))
+		for i := range values {
+			targets[i] = &values[i]
+		}
+		if err := rows.Scan(targets...); err != nil {
+			return QueryResult{}, err
+		}
+		for i, value := range values {
+			values[i] = normalizeValue(value)
+		}
+		result.Rows = append(result.Rows, values)
+	}
+	if err := rows.Err(); err != nil {
+		return QueryResult{}, err
+	}
+
+	return result, nil
+}

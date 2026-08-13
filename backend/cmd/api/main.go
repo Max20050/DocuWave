@@ -15,6 +15,7 @@ import (
 	"github.com/Max20050/docuwave/internal/llm"
 	"github.com/Max20050/docuwave/internal/migrate"
 	"github.com/Max20050/docuwave/internal/report"
+	"github.com/Max20050/docuwave/internal/template"
 )
 
 func main() {
@@ -97,7 +98,8 @@ func main() {
 	llmHandlers := llm.NewHandlers(llmStore, llmEncryptor)
 
 	reportStore := report.NewStore(pool)
-	reportHandlers := report.NewHandlers(reportStore, resolver, llm.NewGenerator(llmStore, llmEncryptor))
+	templates := template.NewRegistry(template.Starters()...)
+	reportHandlers := report.NewHandlers(reportStore, resolver, llm.NewGenerator(llmStore, llmEncryptor), templates)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
@@ -123,8 +125,10 @@ func main() {
 	mux.HandleFunc("GET /api/llm-config", authHandlers.RequireAuth(llmHandlers.Get))
 	mux.HandleFunc("PUT /api/llm-config", authHandlers.RequireAuth(llmHandlers.Save))
 	mux.HandleFunc("DELETE /api/llm-config", authHandlers.RequireAuth(llmHandlers.Delete))
+	mux.HandleFunc("GET /api/report-templates", authHandlers.RequireAuth(reportHandlers.ListTemplates))
 	mux.HandleFunc("POST /api/reports/generate-query", authHandlers.RequireAuth(reportHandlers.GenerateQuery))
 	mux.HandleFunc("POST /api/reports/preview", authHandlers.RequireAuth(reportHandlers.Preview))
+	mux.HandleFunc("POST /api/reports/preview-template", authHandlers.RequireAuth(reportHandlers.PreviewTemplate))
 	mux.HandleFunc("GET /api/reports", authHandlers.RequireAuth(reportHandlers.List))
 	mux.HandleFunc("POST /api/reports", authHandlers.RequireAuth(reportHandlers.Create))
 	mux.HandleFunc("DELETE /api/reports/{id}", authHandlers.RequireAuth(reportHandlers.Delete))

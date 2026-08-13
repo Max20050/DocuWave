@@ -7,10 +7,12 @@ import {
   createReport,
   deleteReport,
   listDataSources,
+  listReportTemplates,
   listReports,
   type DataSource,
   type Report,
   type ReportInput,
+  type ReportTemplate,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { ReportBuilder } from "@/app/ui/report-builder";
@@ -20,6 +22,7 @@ export default function ReportsPage() {
   const { token, logout } = useAuth();
   const [reports, setReports] = useState<Report[] | null>(null);
   const [sources, setSources] = useState<DataSource[] | null>(null);
+  const [templates, setTemplates] = useState<ReportTemplate[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -27,10 +30,11 @@ export default function ReportsPage() {
       router.replace("/login");
       return;
     }
-    Promise.all([listReports(token), listDataSources(token)])
-      .then(([loadedReports, loadedSources]) => {
+    Promise.all([listReports(token), listDataSources(token), listReportTemplates(token)])
+      .then(([loadedReports, loadedSources, loadedTemplates]) => {
         setReports(loadedReports);
         setSources(loadedSources);
+        setTemplates(loadedTemplates);
       })
       .catch(() => {
         logout();
@@ -85,7 +89,10 @@ export default function ReportsPage() {
               <div>
                 <p className="font-medium">{report.name}</p>
                 <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                  {report.dataSourceName} · {report.prompt}
+                  {report.dataSourceName} ·{" "}
+                  {templates.find((template) => template.id === report.templateId)?.name ??
+                    report.templateId}{" "}
+                  · {report.prompt}
                 </p>
               </div>
               <button

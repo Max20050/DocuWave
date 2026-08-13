@@ -11,6 +11,7 @@ import (
 	"github.com/Max20050/docuwave/internal/auth"
 	"github.com/Max20050/docuwave/internal/datasource"
 	"github.com/Max20050/docuwave/internal/llm"
+	"github.com/Max20050/docuwave/internal/template"
 )
 
 const (
@@ -21,16 +22,23 @@ const (
 	queryTimeout = 30 * time.Second
 )
 
-// Handlers exposes HTTP handlers for generating queries from natural language
-// and for managing the report configurations built from them.
+// Handlers exposes HTTP handlers for generating queries from natural language,
+// for the templates a report can be rendered through, and for managing the
+// report configurations built from them.
 type Handlers struct {
 	store     *Store
 	resolver  *datasource.Resolver
 	generator *llm.Generator
+	templates *template.Registry
 }
 
-func NewHandlers(store *Store, resolver *datasource.Resolver, generator *llm.Generator) *Handlers {
-	return &Handlers{store: store, resolver: resolver, generator: generator}
+func NewHandlers(
+	store *Store,
+	resolver *datasource.Resolver,
+	generator *llm.Generator,
+	templates *template.Registry,
+) *Handlers {
+	return &Handlers{store: store, resolver: resolver, generator: generator, templates: templates}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -56,14 +64,16 @@ func writeResolveError(w http.ResponseWriter, err error) {
 }
 
 type reportResponse struct {
-	ID             string `json:"id"`
-	DataSourceID   string `json:"dataSourceId"`
-	DataSourceName string `json:"dataSourceName"`
-	Name           string `json:"name"`
-	Prompt         string `json:"prompt"`
-	Query          string `json:"query"`
-	CreatedAt      string `json:"createdAt"`
-	UpdatedAt      string `json:"updatedAt"`
+	ID             string          `json:"id"`
+	DataSourceID   string          `json:"dataSourceId"`
+	DataSourceName string          `json:"dataSourceName"`
+	Name           string          `json:"name"`
+	Prompt         string          `json:"prompt"`
+	Query          string          `json:"query"`
+	TemplateID     string          `json:"templateId"`
+	TemplateConfig template.Config `json:"templateConfig"`
+	CreatedAt      string          `json:"createdAt"`
+	UpdatedAt      string          `json:"updatedAt"`
 }
 
 func toResponse(rep Report) reportResponse {
@@ -74,9 +84,100 @@ func toResponse(rep Report) reportResponse {
 		Name:           rep.Name,
 		Prompt:         rep.Prompt,
 		Query:          rep.Query,
+		TemplateID:     rep.TemplateID,
+		TemplateConfig: rep.TemplateConfig,
 		CreatedAt:      rep.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:      rep.UpdatedAt.Format(time.RFC3339),
 	}
+}
+
+// ListTemplates handles GET /api/report-templates: the templates a report can be
+// rendered through, each with the slots the user maps their query output onto.
+func (h *Handlers) ListTemplates(w http.ResponseWriter, r *http.Request) {
+	if _, ok := auth.UserIDFromContext(r.Context()); !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, h.templates.List())
+}
+
+// writeTemplateError maps a template failure onto an HTTP response. A missing
+// template or an unusable mapping is the caller's to fix; a render fault is ours.
+func writeTemplateError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, template.ErrUnknownTemplate), errors.Is(err, template.ErrInvalidConfig):
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "failed to render the template")
+	}
+}
+
+type previewTemplateRequest struct {
+	DataSourceID   string          `json:"dataSourceId"`
+	Query          string          `json:"query"`
+	TemplateID     string          `json:"templateId"`
+	TemplateConfig template.Config `json:"templateConfig"`
+}
+
+type previewTemplateResponse struct {
+	HTML string `json:"html"`
+}
+
+// PreviewTemplate handles POST /api/reports/preview-template: it runs the query,
+// renders the chosen template with the rows it returned, and hands back the
+// document. The preview is the same rendering path the delivered report uses, so
+// what the user approves is what they'll get.
+func (h *Handlers) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	var req previewTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	switch {
+	case req.DataSourceID == "":
+		writeError(w, http.StatusBadRequest, "dataSourceId is required")
+		return
+	case req.Query == "":
+		writeError(w, http.StatusBadRequest, "query is required")
+		return
+	case req.TemplateID == "":
+		writeError(w, http.StatusBadRequest, "templateId is required")
+		return
+	}
+
+	_, connector, err := h.resolver.Resolve(r.Context(), userID, req.DataSourceID)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
+	defer cancel()
+
+	result, err := connector.RunQuery(ctx, req.Query, datasource.PreviewRowLimit)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("query failed: %v", err))
+		return
+	}
+
+	html, err := h.templates.Render(req.TemplateID, template.Data{
+		Columns:     result.Columns,
+		Rows:        result.Rows,
+		GeneratedAt: time.Now(),
+	}, req.TemplateConfig)
+	if err != nil {
+		writeTemplateError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, previewTemplateResponse{HTML: string(html)})
 }
 
 type generateQueryRequest struct {
@@ -207,10 +308,12 @@ func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
 }
 
 type createReportRequest struct {
-	Name         string `json:"name"`
-	DataSourceID string `json:"dataSourceId"`
-	Prompt       string `json:"prompt"`
-	Query        string `json:"query"`
+	Name           string          `json:"name"`
+	DataSourceID   string          `json:"dataSourceId"`
+	Prompt         string          `json:"prompt"`
+	Query          string          `json:"query"`
+	TemplateID     string          `json:"templateId"`
+	TemplateConfig template.Config `json:"templateConfig"`
 }
 
 // Create handles POST /api/reports, storing the reviewed query alongside the
@@ -232,6 +335,14 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The mapping is checked against the template's slots, but not against the
+	// query's columns: that would mean running the query to save a report.
+	// Rendering re-checks it against the rows it actually gets.
+	if err := h.templates.ValidateConfig(req.TemplateID, req.TemplateConfig); err != nil {
+		writeTemplateError(w, err)
+		return
+	}
+
 	// Resolving proves the source exists and belongs to this user before the
 	// insert would fail on a foreign key.
 	if _, _, err := h.resolver.Resolve(r.Context(), userID, req.DataSourceID); err != nil {
@@ -240,11 +351,13 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	created, err := h.store.Create(r.Context(), Report{
-		UserID:       userID,
-		DataSourceID: req.DataSourceID,
-		Name:         req.Name,
-		Prompt:       req.Prompt,
-		Query:        req.Query,
+		UserID:         userID,
+		DataSourceID:   req.DataSourceID,
+		Name:           req.Name,
+		Prompt:         req.Prompt,
+		Query:          req.Query,
+		TemplateID:     req.TemplateID,
+		TemplateConfig: req.TemplateConfig,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save report")
@@ -264,6 +377,8 @@ func missingField(req createReportRequest) string {
 		return "prompt"
 	case req.Query == "":
 		return "query"
+	case req.TemplateID == "":
+		return "templateId"
 	default:
 		return ""
 	}

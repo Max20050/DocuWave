@@ -44,14 +44,25 @@ the user's query).
 ## Why HTML
 
 `Render` returns a self-contained HTML document — styles inlined, no scripts, no
-external requests. One artifact then serves three consumers:
+external requests. One artifact then serves two consumers:
 
 1. the layout preview in the app (an iframe with an empty `sandbox`),
-2. the PDF renderer (issue #10 feeds these bytes to a print engine),
-3. anything that archives or emails a report body.
+2. anything that archives or emails a report body.
 
-Excel and CSV output (also #10) doesn't come from the HTML — those formats take
-the rows and the mapping directly, because a spreadsheet wants cells, not a page.
+The file formats don't come from that HTML. A spreadsheet wants cells it can
+sum and a PDF wants blocks to lay out on a page, so a template describes the
+same document a second time, structurally, through an optional second method:
+
+```go
+type Documenter interface {
+    Document(Data, Config) Doc  // title, subtitle, footer, blocks
+}
+```
+
+Both projections come out of one computation inside the template, so a report's
+preview, PDF and spreadsheet agree. A template that doesn't implement
+`Documenter` is still downloadable in every format — the fallback prints the
+query's own output. See `documents/v1/report-rendering.md`.
 
 ## The render pipeline
 
@@ -75,7 +86,10 @@ func (r *Registry) Render(id string, data Data, cfg Config) ([]byte, error)
 2. Declare its slots in `Meta`.
 3. Build its body with `mustDocument(...)` and render with `renderDocument(...)`,
    so it prints inside the shared document shell.
-4. Add it to `Starters()`.
+4. Implement `Document` so its PDF and spreadsheet print the same arrangement
+   its page does. Skipping this is allowed; the files then show the query's own
+   output.
+5. Add it to `Starters()`.
 
 That's the whole checklist — no handler, storage, or frontend change. The UI
 picks up the new template from `GET /api/report-templates` and generates its
@@ -116,6 +130,7 @@ rather than anything specific to the starters.
 | `GET /api/report-templates` | Templates with their slots — the picker and mapping UI are built from this |
 | `POST /api/reports/preview-template` | Runs the query, renders the chosen template with the real rows, returns `{ "html": ... }` |
 | `POST /api/reports` | Saves `templateId` + `templateConfig` with the rest of the report |
+| `GET /api/reports/{id}/download?format=` | Runs the report and returns one of its files |
 
 `POST /api/reports` validates the mapping against the template's slots but not
 against the query's columns; the render path re-validates against the rows it

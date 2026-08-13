@@ -5,38 +5,32 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/Max20050/docuwave/internal/auth"
 	"github.com/Max20050/docuwave/internal/datasource"
 	"github.com/Max20050/docuwave/internal/query"
+	"github.com/Max20050/docuwave/internal/render"
 	"github.com/Max20050/docuwave/internal/template"
 )
 
-// queryTimeout bounds a query run against the user's own data source.
-const queryTimeout = 30 * time.Second
-
-// Handlers exposes HTTP handlers for the templates a report renders through and
-// for managing report configurations.
+// Handlers exposes HTTP handlers for the templates a report renders through,
+// for managing report configurations, and for downloading a report's files.
 //
 // A report's query is never accepted as text. It arrives as a specification,
-// which is compiled here against the data source's stored schema — so the only
-// SQL that runs is SQL this server assembled.
+// which the runner compiles against the data source's stored schema — so the
+// only SQL that runs is SQL this server assembled.
 type Handlers struct {
 	store     *Store
-	resolver  *datasource.Resolver
-	schemas   *datasource.SchemaProvider
+	runner    *Runner
 	templates *template.Registry
 }
 
-func NewHandlers(
-	store *Store,
-	resolver *datasource.Resolver,
-	schemas *datasource.SchemaProvider,
-	templates *template.Registry,
-) *Handlers {
-	return &Handlers{store: store, resolver: resolver, schemas: schemas, templates: templates}
+func NewHandlers(store *Store, runner *Runner, templates *template.Registry) *Handlers {
+	return &Handlers{store: store, runner: runner, templates: templates}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -98,8 +92,11 @@ type reportResponse struct {
 	QuerySpec      query.Spec      `json:"querySpec"`
 	TemplateID     string          `json:"templateId"`
 	TemplateConfig template.Config `json:"templateConfig"`
-	CreatedAt      string          `json:"createdAt"`
-	UpdatedAt      string          `json:"updatedAt"`
+	// Formats are the files this report is delivered as, and the ones it can be
+	// downloaded in.
+	Formats   []string `json:"formats"`
+	CreatedAt string   `json:"createdAt"`
+	UpdatedAt string   `json:"updatedAt"`
 }
 
 func toResponse(rep Report) reportResponse {
@@ -113,53 +110,30 @@ func toResponse(rep Report) reportResponse {
 		QuerySpec:      rep.QuerySpec,
 		TemplateID:     rep.TemplateID,
 		TemplateConfig: rep.TemplateConfig,
+		Formats:        render.Strings(rep.Formats),
 		CreatedAt:      rep.CreatedAt.Format(time.RFC3339),
 		UpdatedAt:      rep.UpdatedAt.Format(time.RFC3339),
 	}
 }
 
-// runnable is a compiled query with everything needed to run it.
-type runnable struct {
-	connector datasource.Connector
-	compiled  query.Compiled
-	// language names the query language, for labelling the SQL in the UI.
-	language string
-}
-
-// prepare resolves a data source, loads the schema read when it was connected,
-// and compiles the specification against it. Every query in this package is
-// built here and nowhere else.
-func (h *Handlers) prepare(
-	ctx context.Context,
-	userID, dataSourceID string,
-	spec query.Spec,
-) (runnable, error) {
-	source, connector, err := h.resolver.Resolve(ctx, userID, dataSourceID)
-	if err != nil {
-		return runnable{}, err
+// writeRenderError maps a failure to produce a report's files onto an HTTP
+// response.
+func writeRenderError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotRunnable):
+		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, render.ErrUnknownFormat), errors.Is(err, render.ErrNoFormats):
+		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrQueryFailed):
+		// The report's configuration was checked when it was saved and its query
+		// is this server's own, so a failure now is the source's end: it's
+		// unreachable, or the data behind the report has changed under it.
+		writeError(w, http.StatusBadGateway, err.Error())
+	case errors.Is(err, template.ErrUnknownTemplate), errors.Is(err, template.ErrInvalidConfig):
+		writeTemplateError(w, err)
+	default:
+		writeQueryError(w, err)
 	}
-
-	dialect, err := query.DialectFor(source.Type)
-	if err != nil {
-		return runnable{}, err
-	}
-
-	schema, _, err := h.schemas.Schema(ctx, userID, dataSourceID)
-	if err != nil {
-		return runnable{}, err
-	}
-
-	compiled, err := query.Compile(spec, schema, dialect, time.Now())
-	if err != nil {
-		return runnable{}, err
-	}
-
-	return runnable{connector: connector, compiled: compiled, language: connector.QueryLanguage()}, nil
-}
-
-// run executes a prepared query.
-func (r runnable) run(ctx context.Context, limit int) (datasource.QueryResult, error) {
-	return r.connector.RunQuery(ctx, r.compiled.Text, r.compiled.Args, limit)
 }
 
 // ListTemplates handles GET /api/report-templates: the templates a report can be
@@ -215,7 +189,7 @@ func (h *Handlers) Preview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prepared, err := h.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
+	prepared, err := h.runner.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
 	if err != nil {
 		writeQueryError(w, err)
 		return
@@ -276,7 +250,7 @@ func (h *Handlers) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	prepared, err := h.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
+	prepared, err := h.runner.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
 	if err != nil {
 		writeQueryError(w, err)
 		return
@@ -314,6 +288,19 @@ type createReportRequest struct {
 	QuerySpec      query.Spec      `json:"querySpec"`
 	TemplateID     string          `json:"templateId"`
 	TemplateConfig template.Config `json:"templateConfig"`
+	// Formats are the files the report should be delivered as. A request that
+	// leaves them out gets a PDF, which is what a report was before it could be
+	// anything else; a request that sends an empty list is asking for nothing
+	// and is rejected.
+	Formats []string `json:"formats"`
+}
+
+// chosenFormats reads the formats a create request asked for.
+func chosenFormats(req createReportRequest) ([]render.Format, error) {
+	if req.Formats == nil {
+		return []render.Format{render.FormatPDF}, nil
+	}
+	return render.ParseFormats(req.Formats)
 }
 
 // Create handles POST /api/reports, storing the query specification alongside
@@ -343,11 +330,17 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	formats, err := chosenFormats(req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Compiling proves the specification is one this source can answer, and
 	// resolving the source along the way proves it belongs to this user. The SQL
 	// is stored for the user to read; it's recompiled from the spec on every run,
 	// so a relative date window stays relative.
-	prepared, err := h.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
+	prepared, err := h.runner.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
 	if err != nil {
 		writeQueryError(w, err)
 		return
@@ -362,6 +355,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		QuerySpec:      req.QuerySpec,
 		TemplateID:     req.TemplateID,
 		TemplateConfig: req.TemplateConfig,
+		Formats:        formats,
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save report")
@@ -406,6 +400,63 @@ func (h *Handlers) List(w http.ResponseWriter, r *http.Request) {
 		resp = append(resp, toResponse(rep))
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// Download handles GET /api/reports/{id}/download?format=pdf: it runs the
+// report and returns one of its files.
+//
+// The file is produced in memory by the same pipeline that scheduled and
+// on-demand delivery use, so what a user downloads here is the attachment their
+// recipients get. Without a format it returns the first the report is
+// configured for.
+func (h *Handlers) Download(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	rep, err := h.store.Get(r.Context(), userID, id)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			writeError(w, http.StatusNotFound, "report not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to load report")
+		return
+	}
+
+	// A stored report always has at least one format — the column is checked in
+	// the database and read back through ParseFormats — so the first is a
+	// sensible default when the request doesn't name one.
+	format := rep.Formats[0]
+	if requested := r.URL.Query().Get("format"); requested != "" {
+		if format, err = render.ParseFormat(requested); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	artifact, err := h.runner.RenderFormat(r.Context(), rep, format)
+	if err != nil {
+		writeRenderError(w, err)
+		return
+	}
+
+	// The filename is a slug of the report's name, so it can't carry anything
+	// that would need escaping here.
+	w.Header().Set("Content-Type", artifact.ContentType)
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", artifact.Filename))
+	w.Header().Set("Content-Length", strconv.Itoa(len(artifact.Bytes)))
+	if _, err := w.Write(artifact.Bytes); err != nil {
+		log.Printf("report %s: writing the %s response failed: %v", rep.ID, format, err)
+	}
 }
 
 // Delete handles DELETE /api/reports/{id}.

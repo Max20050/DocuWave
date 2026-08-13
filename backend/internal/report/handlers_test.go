@@ -15,11 +15,12 @@ import (
 	"github.com/Max20050/docuwave/internal/auth"
 	"github.com/Max20050/docuwave/internal/datasource"
 	"github.com/Max20050/docuwave/internal/query"
+	"github.com/Max20050/docuwave/internal/render"
 	"github.com/Max20050/docuwave/internal/template"
 )
 
 func TestHandlersRequireAuthentication(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil, nil)
+	handlers := NewHandlers(nil, nil, nil)
 
 	cases := map[string]struct {
 		handler http.HandlerFunc
@@ -30,6 +31,7 @@ func TestHandlersRequireAuthentication(t *testing.T) {
 		"preview template": {handlers.PreviewTemplate, httptest.NewRequest(http.MethodPost, "/api/reports/preview-template", nil)},
 		"create":           {handlers.Create, httptest.NewRequest(http.MethodPost, "/api/reports", nil)},
 		"list":             {handlers.List, httptest.NewRequest(http.MethodGet, "/api/reports", nil)},
+		"download":         {handlers.Download, httptest.NewRequest(http.MethodGet, "/api/reports/r-1/download", nil)},
 		"delete":           {handlers.Delete, httptest.NewRequest(http.MethodDelete, "/api/reports/r-1", nil)},
 	}
 
@@ -182,7 +184,7 @@ func TestWriteTemplateError(t *testing.T) {
 // The UI builds its template picker and its field mapping controls from this
 // response, so it has to carry every slot.
 func TestListTemplates(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil, template.NewRegistry(template.Starters()...))
+	handlers := NewHandlers(nil, nil, template.NewRegistry(template.Starters()...))
 
 	recorder := httptest.NewRecorder()
 	handlers.ListTemplates(recorder, authenticatedRequest(t, http.MethodGet, "/api/report-templates", nil))
@@ -208,7 +210,7 @@ func TestListTemplates(t *testing.T) {
 // The request is checked before the query runs, so a half-filled preview never
 // reaches the user's data source.
 func TestPreviewTemplateRejectsIncompleteRequests(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil, template.NewRegistry(template.Starters()...))
+	handlers := NewHandlers(nil, nil, template.NewRegistry(template.Starters()...))
 
 	spec := query.Spec{Table: "sales", Fields: []query.Field{{Column: "region"}}}
 	tests := map[string]previewTemplateRequest{
@@ -256,6 +258,7 @@ func TestReportResponseJSONShape(t *testing.T) {
 			Columns: map[string][]string{"group": {"region"}},
 			Text:    map[string]string{"title": "Monthly sales"},
 		},
+		Formats:   []render.Format{render.FormatPDF, render.FormatCSV},
 		CreatedAt: created,
 		UpdatedAt: created,
 	}))
@@ -269,6 +272,7 @@ func TestReportResponseJSONShape(t *testing.T) {
 		`"querySpec":{"table":"sales","fields":[{"column":"region"},{"column":"total","aggregate":"sum"}],"limit":1000},` +
 		`"templateId":"grouped-totals",` +
 		`"templateConfig":{"columns":{"group":["region"]},"text":{"title":"Monthly sales"}},` +
+		`"formats":["pdf","csv"],` +
 		`"createdAt":"2026-08-12T09:30:00Z","updatedAt":"2026-08-12T09:30:00Z"}`
 	if string(body) != want {
 		t.Errorf("got %s, want %s", body, want)
@@ -290,6 +294,131 @@ func TestLegacyReportsAreNotRunnable(t *testing.T) {
 	// The UI reads this to mark the report as needing a rebuild.
 	if got := toResponse(legacy).QuerySpec; len(got.Fields) != 0 {
 		t.Errorf("got %+v, want an empty specification", got)
+	}
+}
+
+// A report is delivered as the files its client asked for, so the request says
+// which — and a request that asks for nothing, or for something this server
+// can't produce, is refused rather than quietly given a default.
+func TestChosenFormats(t *testing.T) {
+	tests := []struct {
+		name    string
+		request createReportRequest
+		want    []render.Format
+		wantErr error
+	}{
+		{
+			name:    "a request that leaves formats out gets a PDF",
+			request: createReportRequest{Name: "n"},
+			want:    []render.Format{render.FormatPDF},
+		},
+		{
+			name:    "the formats asked for",
+			request: createReportRequest{Formats: []string{"csv", "xlsx"}},
+			want:    []render.Format{render.FormatXLSX, render.FormatCSV},
+		},
+		{
+			name:    "asking for nothing is a mistake, not a default",
+			request: createReportRequest{Formats: []string{}},
+			wantErr: render.ErrNoFormats,
+		},
+		{
+			name:    "a format this server cannot produce",
+			request: createReportRequest{Formats: []string{"pdf", "docx"}},
+			wantErr: render.ErrUnknownFormat,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := chosenFormats(tt.request)
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) {
+					t.Fatalf("got %v, want %v", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("chosenFormats returned error: %v", err)
+			}
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// A report is rendered unattended on a schedule, so each way it can fail has to
+// tell the user whether it's theirs to fix, ours, or their data source's.
+func TestWriteRenderError(t *testing.T) {
+	tests := []struct {
+		name       string
+		err        error
+		wantStatus int
+		wantBody   string
+	}{
+		{
+			name:       "a report saved before query building",
+			err:        ErrNotRunnable,
+			wantStatus: http.StatusConflict,
+			wantBody:   "rebuilt",
+		},
+		{
+			name:       "a format the report is not configured for",
+			err:        fmt.Errorf("%w: this report is not configured for csv", render.ErrUnknownFormat),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "csv",
+		},
+		{
+			name:       "the data source could not answer",
+			err:        fmt.Errorf("%w: connection refused", ErrQueryFailed),
+			wantStatus: http.StatusBadGateway,
+			wantBody:   "connection refused",
+		},
+		{
+			name:       "a mapping the query no longer supports",
+			err:        fmt.Errorf("%w: mapped to \"profit\"", template.ErrInvalidConfig),
+			wantStatus: http.StatusBadRequest,
+			wantBody:   "profit",
+		},
+		{
+			name:       "a data source that is gone",
+			err:        datasource.ErrNotFound,
+			wantStatus: http.StatusNotFound,
+			wantBody:   "data source not found",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			writeRenderError(recorder, tt.err)
+
+			if recorder.Code != tt.wantStatus {
+				t.Errorf("got status %d, want %d", recorder.Code, tt.wantStatus)
+			}
+			if !strings.Contains(recorder.Body.String(), tt.wantBody) {
+				t.Errorf("body %q does not mention %q", recorder.Body.String(), tt.wantBody)
+			}
+		})
+	}
+}
+
+// The report has to be loaded before anything runs, so a download of one that
+// isn't there never reaches the user's data source.
+func TestDownloadRequiresAnID(t *testing.T) {
+	handlers := NewHandlers(nil, nil, template.NewRegistry(template.Starters()...))
+
+	recorder := httptest.NewRecorder()
+	handlers.Download(recorder, authenticatedRequest(t, http.MethodGet, "/api/reports//download", nil))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want %d", recorder.Code, http.StatusBadRequest)
 	}
 }
 

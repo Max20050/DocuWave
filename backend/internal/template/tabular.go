@@ -40,6 +40,10 @@ type tabularView struct {
 	Rows    [][]cell
 }
 
+// tabularUnmappedNote is printed while the user still hasn't chosen the columns
+// the table needs, because a preview has to show something at that point.
+const tabularUnmappedNote = "No columns are mapped to this template yet."
+
 var tabularBody = mustDocument(`
 {{if .Columns}}
 <section>
@@ -47,9 +51,9 @@ var tabularBody = mustDocument(`
 <thead><tr>{{range .Columns}}<th class="{{.Class}}">{{.Name}}</th>{{end}}</tr></thead>
 <tbody>{{range .Rows}}<tr>{{range .}}<td class="{{.Class}}">{{.Text}}</td>{{end}}</tr>{{end}}</tbody>
 </table>
-{{if not .Rows}}<p class="empty">The query returned no rows.</p>{{end}}
+{{if not .Rows}}<p class="empty">` + noRowsNote + `</p>{{end}}
 </section>
-{{else}}<p class="empty">No columns are mapped to this template yet.</p>{{end}}
+{{else}}<p class="empty">` + tabularUnmappedNote + `</p>{{end}}
 `)
 
 func (t Tabular) Render(data Data, cfg Config) ([]byte, error) {
@@ -68,4 +72,24 @@ func (t Tabular) Render(data Data, cfg Config) ([]byte, error) {
 		Columns: columns,
 		Rows:    rows,
 	})
+}
+
+func (t Tabular) Document(data Data, cfg Config) Doc {
+	doc := Doc{
+		Title:       cfg.TextFor("title"),
+		Footer:      footerText(data, cfg.TextFor("note")),
+		GeneratedAt: data.GeneratedAt,
+	}
+
+	columns := data.resolve(cfg.ColumnsFor("columns"))
+	if len(columns) == 0 {
+		doc.Blocks = []Block{{Note: tabularUnmappedNote}}
+		return doc
+	}
+
+	doc.Blocks = []Block{{
+		Table: tableFrom(columns, data.Rows),
+		Note:  emptyNote(data.Rows),
+	}}
+	return doc
 }

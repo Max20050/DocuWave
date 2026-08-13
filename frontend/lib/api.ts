@@ -270,6 +270,16 @@ export type TemplateConfig = {
   text?: Record<string, string>;
 };
 
+// A report is delivered as one or more files. The options come from the
+// server's renderer registry, so this list is the whole of what it can produce.
+export type ReportFormat = "pdf" | "xlsx" | "csv";
+
+export const REPORT_FORMATS: { value: ReportFormat; label: string; description: string }[] = [
+  { value: "pdf", label: "PDF", description: "The report as a document, laid out for printing." },
+  { value: "xlsx", label: "Excel", description: "A worksheet whose numbers are still numbers." },
+  { value: "csv", label: "CSV", description: "Plain rows, for loading into another tool." },
+];
+
 export type Report = {
   id: string;
   dataSourceId: string;
@@ -279,6 +289,7 @@ export type Report = {
   query: string;
   templateId: string;
   templateConfig: TemplateConfig;
+  formats: ReportFormat[];
   createdAt: string;
   updatedAt: string;
 };
@@ -303,6 +314,7 @@ export type ReportInput = {
   query: string;
   templateId: string;
   templateConfig: TemplateConfig;
+  formats: ReportFormat[];
 };
 
 export async function listReportTemplates(token: string): Promise<ReportTemplate[]> {
@@ -386,6 +398,32 @@ export async function createReport(token: string, input: ReportInput): Promise<R
     throw new ApiError(response.status, await parseErrorMessage(response));
   }
   return response.json();
+}
+
+// downloadReport runs the report on the server and saves the file it returns.
+// The request carries the session token, so the file arrives as a response body
+// rather than at a URL the browser could follow on its own.
+export async function downloadReport(
+  token: string,
+  id: string,
+  format: ReportFormat,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await authFetch(`/api/reports/${id}/download?format=${format}`, token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return {
+    blob: await response.blob(),
+    filename: filenameFrom(response.headers.get("Content-Disposition"), `${id}.${format}`),
+  };
+}
+
+// filenameFrom reads the name the server chose for the file. The header is
+// exposed to scripts by the API's CORS configuration; if it isn't there, the
+// caller's fallback is used rather than guessing.
+function filenameFrom(disposition: string | null, fallback: string): string {
+  const quoted = disposition?.match(/filename="([^"]+)"/);
+  return quoted?.[1] ?? fallback;
 }
 
 export async function deleteReport(token: string, id: string): Promise<void> {

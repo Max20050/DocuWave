@@ -4,13 +4,16 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import {
+  REPORT_FORMATS,
   createReport,
   deleteReport,
+  downloadReport,
   listDataSources,
   listReportTemplates,
   listReports,
   type DataSource,
   type Report,
+  type ReportFormat,
   type ReportInput,
   type ReportTemplate,
 } from "@/lib/api";
@@ -24,6 +27,9 @@ export default function ReportsPage() {
   const [sources, setSources] = useState<DataSource[] | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // The report being generated, so the button can say so: a download runs the
+  // report's query against the user's data source and isn't instant.
+  const [running, setRunning] = useState<string | null>(null);
 
   useEffect(() => {
     if (!token) {
@@ -46,6 +52,27 @@ export default function ReportsPage() {
     if (!token) return;
     await createReport(token, input);
     setReports(await listReports(token));
+  }
+
+  async function handleDownload(report: Report, format: ReportFormat) {
+    if (!token) return;
+    setError(null);
+    setRunning(`${report.id}:${format}`);
+    try {
+      const { blob, filename } = await downloadReport(token, report.id, format);
+      // The file came back as a response body rather than a URL, so saving it
+      // means handing the browser an object URL for one click.
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate the report");
+    } finally {
+      setRunning(null);
+    }
   }
 
   async function handleDelete(id: string) {
@@ -105,6 +132,21 @@ export default function ReportsPage() {
             <pre className="overflow-x-auto rounded bg-black/[.05] px-3 py-2 font-mono text-xs dark:bg-white/[.08]">
               {report.query}
             </pre>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm text-zinc-600 dark:text-zinc-400">Download</span>
+              {report.formats.map((format) => (
+                <button
+                  key={format}
+                  onClick={() => handleDownload(report, format)}
+                  disabled={running !== null}
+                  className="rounded-full border border-black/[.08] px-3 py-1 text-sm transition-colors hover:bg-black/[.04] disabled:opacity-50 dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
+                >
+                  {running === `${report.id}:${format}`
+                    ? "Generating…"
+                    : (REPORT_FORMATS.find((option) => option.value === format)?.label ?? format)}
+                </button>
+              ))}
+            </div>
           </div>
         ))}
       </div>

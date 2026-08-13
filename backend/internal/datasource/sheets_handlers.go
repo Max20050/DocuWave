@@ -30,16 +30,18 @@ type SheetsHandlers struct {
 	encryptor   *Encryptor
 	oauthConfig *GoogleSheetsConfig
 	tokens      *auth.TokenIssuer
+	schemas     *SchemaProvider
 	frontendURL string
 }
 
-func NewSheetsHandlers(store *Store, connections *SheetsStore, encryptor *Encryptor, oauthConfig *GoogleSheetsConfig, tokens *auth.TokenIssuer, frontendURL string) *SheetsHandlers {
+func NewSheetsHandlers(store *Store, connections *SheetsStore, encryptor *Encryptor, oauthConfig *GoogleSheetsConfig, tokens *auth.TokenIssuer, schemas *SchemaProvider, frontendURL string) *SheetsHandlers {
 	return &SheetsHandlers{
 		store:       store,
 		connections: connections,
 		encryptor:   encryptor,
 		oauthConfig: oauthConfig,
 		tokens:      tokens,
+		schemas:     schemas,
 		frontendURL: frontendURL,
 	}
 }
@@ -254,6 +256,8 @@ func (h *SheetsHandlers) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save data source")
 		return
 	}
+
+	storeSchema(r.Context(), h.schemas, userID, created.ID)
 
 	writeJSON(w, http.StatusCreated, toResponse(created))
 }

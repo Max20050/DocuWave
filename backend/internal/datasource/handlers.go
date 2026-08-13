@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -17,10 +18,21 @@ const testConnectionTimeout = 5 * time.Second
 type Handlers struct {
 	store     *Store
 	encryptor *Encryptor
+	schemas   *SchemaProvider
 }
 
-func NewHandlers(store *Store, encryptor *Encryptor) *Handlers {
-	return &Handlers{store: store, encryptor: encryptor}
+func NewHandlers(store *Store, encryptor *Encryptor, schemas *SchemaProvider) *Handlers {
+	return &Handlers{store: store, encryptor: encryptor, schemas: schemas}
+}
+
+// storeSchema reads a newly connected source's structure and keeps it, because
+// that's what the report builder builds queries out of. A failure doesn't undo
+// the connection: the source is saved either way, and its schema can be read
+// again on demand.
+func storeSchema(ctx context.Context, schemas *SchemaProvider, userID, dataSourceID string) {
+	if _, _, err := schemas.Refresh(ctx, userID, dataSourceID); err != nil {
+		log.Printf("data source %s connected, but reading its schema failed: %v", dataSourceID, err)
+	}
 }
 
 type dataSourceRequest struct {
@@ -184,6 +196,8 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to save data source")
 		return
 	}
+
+	storeSchema(r.Context(), h.schemas, userID, created.ID)
 
 	writeJSON(w, http.StatusCreated, toResponse(created))
 }

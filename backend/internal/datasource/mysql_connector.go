@@ -71,10 +71,11 @@ func (c *mysqlConnector) QueryLanguage() string {
 	return "MySQL SQL"
 }
 
-// RunQuery executes the query inside a read-only transaction. The query text
-// comes from an LLM, so the transaction — not the query text — is what
-// guarantees it can't modify the user's database.
-func (c *mysqlConnector) RunQuery(ctx context.Context, query string, limit int) (QueryResult, error) {
+// RunQuery executes the query inside a read-only transaction. The query is
+// assembled from a validated specification rather than supplied as text; the
+// transaction is the second line of defence, guaranteeing that whatever runs
+// cannot modify the user's database.
+func (c *mysqlConnector) RunQuery(ctx context.Context, query string, args []any, limit int) (QueryResult, error) {
 	db, err := c.open()
 	if err != nil {
 		return QueryResult{}, err
@@ -87,7 +88,7 @@ func (c *mysqlConnector) RunQuery(ctx context.Context, query string, limit int) 
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	rows, err := tx.QueryContext(ctx, query)
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return QueryResult{}, err
 	}

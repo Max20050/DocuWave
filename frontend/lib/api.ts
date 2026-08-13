@@ -241,6 +241,35 @@ export async function deleteLLMConfig(token: string): Promise<void> {
   }
 }
 
+// A slot is a hole in a template's layout the user fills in: "text" takes typed
+// text, "column" a single query output column, "columns" an ordered list.
+export type TemplateSlotKind = "text" | "column" | "columns";
+
+export type TemplateSlot = {
+  key: string;
+  label: string;
+  kind: TemplateSlotKind;
+  description: string;
+  required: boolean;
+  // numeric marks a slot meant for columns of numbers, such as the measures a
+  // template totals. It's a hint for field mapping, not a rule.
+  numeric: boolean;
+};
+
+export type ReportTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  slots: TemplateSlot[];
+};
+
+// TemplateConfig is the user's slot mapping, keyed by slot. It is saved with the
+// report, so the shape matches what the backend stores.
+export type TemplateConfig = {
+  columns?: Record<string, string[]>;
+  text?: Record<string, string>;
+};
+
 export type Report = {
   id: string;
   dataSourceId: string;
@@ -248,6 +277,8 @@ export type Report = {
   name: string;
   prompt: string;
   query: string;
+  templateId: string;
+  templateConfig: TemplateConfig;
   createdAt: string;
   updatedAt: string;
 };
@@ -270,7 +301,40 @@ export type ReportInput = {
   dataSourceId: string;
   prompt: string;
   query: string;
+  templateId: string;
+  templateConfig: TemplateConfig;
 };
+
+export async function listReportTemplates(token: string): Promise<ReportTemplate[]> {
+  const response = await authFetch("/api/report-templates", token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+// previewReportTemplate renders the template on the server with the rows the
+// query actually returns, so the preview is the document the report will be.
+export async function previewReportTemplate(
+  token: string,
+  input: {
+    dataSourceId: string;
+    query: string;
+    templateId: string;
+    templateConfig: TemplateConfig;
+  },
+): Promise<string> {
+  const response = await authFetch("/api/reports/preview-template", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  const body = (await response.json()) as { html: string };
+  return body.html;
+}
 
 export async function generateReportQuery(
   token: string,

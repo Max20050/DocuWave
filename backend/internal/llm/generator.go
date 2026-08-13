@@ -22,8 +22,13 @@ type QueryRequest struct {
 	Prompt  string
 }
 
-// Generator turns a natural language request into a runnable query using the
-// calling user's own configured provider and API key.
+// Generator calls the calling user's own configured provider with their own API
+// key.
+//
+// Nothing wires GenerateQuery into the report flow any more: a report's query is
+// compiled from a structured specification, and no query text from a client — or
+// from a model — is executed. What's kept here is the path from a stored
+// provider choice to a provider call, which is what report conclusions will use.
 type Generator struct {
 	store     *Store
 	encryptor *Encryptor

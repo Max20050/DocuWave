@@ -1,0 +1,33 @@
+{
+  "name": "render",
+  "summary": "Turns a template.Doc into the files a report is configured for — PDF, Excel (.xlsx), CSV — entirely in memory as Artifacts (bytes + filename + content type), never paths. Formats are a pluggable registry.",
+  "files": {
+    "registry_and_artifacts": "backend/internal/render/render.go",
+    "pdf": "backend/internal/render/pdf.go",
+    "xlsx": "backend/internal/render/xlsx.go",
+    "csv": "backend/internal/render/csv.go",
+    "design_doc": "documents/v1/report-rendering.md",
+    "tests": "backend/internal/render/render_test.go"
+  },
+  "exposes": [
+    "Format = pdf | xlsx | csv; Formats() []Format",
+    "Renderer interface: Extension() string, ContentType() string, Render(template.Doc) ([]byte, error)",
+    "Render(doc, format, name) (Artifact, error) and RenderAll(doc, formats, name) ([]Artifact, error)",
+    "Artifact{Format, Filename, ContentType, Bytes}",
+    "ParseFormat(string), ParseFormats([]string), Strings([]Format), Includes(formats, format)",
+    "Filename(name, at, extension) string",
+    "ErrUnknownFormat, ErrNoFormats"
+  ],
+  "depends_on": ["template (Doc model)", "go-pdf/fpdf", "xuri/excelize/v2", "encoding/csv"],
+  "key_notes": [
+    "Adding a format = one new file implementing Renderer + one entry in the `renderers` slice in render.go. Nothing outside this package names a format except the user's stored configuration.",
+    "The `renderers` slice order IS the canonical order: ParseFormats dedupes and re-sorts into it, so a report's formats are stored and displayed consistently however the client listed them. It's also why Formats[0] is a safe default for the download endpoint.",
+    "The PDF is DRAWN from the Doc blocks with fpdf, not converted from the template's HTML — deliberately, to avoid shipping a headless browser. If you change a template's HTML you must change its Document() too or the formats diverge.",
+    "PDF uses the Helvetica core font (nothing embedded, small files), A4 in millimetres, and samples at most widthSampleRows = 200 rows to size columns.",
+    "The CSV starts with a UTF-8 BOM so Excel doesn't fall back to the ANSI code page, and writes numbers UNFORMATTED (no thousands separators) because a CSV is usually read by another program. Its records are intentionally ragged — that's the cost of flattening a document into a sheet.",
+    "XLSX writes real numbers wherever template.Value.IsNumber, so recipients can sort/filter/sum. The sheet is always named 'Report' (Excel's 31-char + punctuation limits vs. user-supplied report names).",
+    "Filename() slugifies the report name to [a-z0-9-], caps it at 60 chars, and appends the UTC date. That slug is what keeps a user-supplied name out of the Content-Disposition header and off the filesystem — the download handler relies on it and does no escaping of its own.",
+    "RenderAll stops at the first failure: a delivery carrying only some of the configured files is not the report the client configured."
+  ],
+  "updated_at": "2026-08-13T22:09:25Z"
+}

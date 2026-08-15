@@ -1,0 +1,35 @@
+{
+  "name": "query",
+  "summary": "Compiles a structured, JSON-serializable Spec into a runnable query for Postgres, MySQL or the Google Visualization language. This package is the security boundary: no client-supplied query text is ever executed, every identifier is resolved against the source's stored schema, and SQL values are bound as parameters.",
+  "files": {
+    "spec_and_types": "backend/internal/query/query.go",
+    "validation": "backend/internal/query/resolve.go",
+    "sql_compiler": "backend/internal/query/sql.go",
+    "sheets_compiler": "backend/internal/query/sheets.go",
+    "tests": "backend/internal/query/compile_test.go, sheets_test.go"
+  },
+  "exposes": [
+    "Spec{Table, Fields []Field, Filters []Filter, Sorts []Sort, Limit} — persisted as reports.query_spec JSONB",
+    "Spec.IsZero(), Spec.WithLimit(n)",
+    "Compile(spec, datasource.Schema, Dialect, now time.Time) (Compiled, error)",
+    "Compiled{Text string, Args []any, Columns []string}",
+    "DialectFor(sourceType) (Dialect, error); DialectPostgres/DialectMySQL/DialectSheets",
+    "Aggregate (none/sum/avg/min/max/count) + Aggregates slice; Operator set + Operators()",
+    "DefaultRowLimit = 1000, MaxRowLimit = 5000",
+    "ErrInvalidSpec, ErrUnsupportedSource"
+  ],
+  "depends_on": ["datasource (Schema type only — no DB, no network)"],
+  "key_notes": [
+    "This package replaced LLM-generated SQL (commit 'Fixed sql injection vulnerability'). Any change here is security-relevant: aggregates come from the sqlFunction whitelist, operators from the operatorArities whitelist, identifiers from the schema, and SQL values only reach the text through bind().",
+    "Compile takes `now` as a parameter so a compile is reproducible and testable. Relative date operators (last_days, this_month, last_month) are expanded at compile time into fixed >= / < bounds in UTC — which is why a report's Spec is recompiled on every run rather than its stored SQL being reused.",
+    "Output column names are derived in resolve.go: outputName() gives `sum_amount` for an aggregate, the bare column name otherwise, and `row_count` for a bare count. Template slot mappings are stored against THESE names, so changing outputName breaks saved reports.",
+    "A sort must name one of the selected fields — ordering by an unselected column is rejected, not silently added to the select list.",
+    "Filter values are coerced to the column's type family (familyOf() matches on substrings of the source's own type name like 'int4', 'timestamptz') before compiling, so a bad value is a 400 rather than a database error.",
+    "Google Sheets has no parameter binding, so sheetsLiteral() writes values into the query text. It is deliberately strict: it picks whichever quote character the value does not contain, and REFUSES values containing both ' and \" or any control character. Do not 'fix' this by adding escaping.",
+    "Sheets addresses columns by letter (A, B, ... AA) derived from the column's position in the stored header row — so a user inserting a spreadsheet column silently shifts every saved report until the schema is refreshed.",
+    "COUNT(*) is unsupported on Sheets (the gviz language has no count(*)); sheetsFieldExpression returns ErrInvalidSpec telling the user to count a specific column.",
+    "`contains` compiles to LIKE ... ESCAPE '!' on SQL (backslash avoided because engines disagree about it) and to CONTAINS on Sheets.",
+    "Adding a data source type requires an entry in the `dialects` map here plus a compile branch in Compile() — this is the only place query building learns about a source type."
+  ],
+  "updated_at": "2026-08-13T22:09:25Z"
+}

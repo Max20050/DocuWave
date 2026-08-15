@@ -1,0 +1,34 @@
+{
+  "name": "llm",
+  "summary": "Per-user LLM provider configuration: a provider choice plus an encrypted API key, and a pluggable Provider registry (Claude, OpenAI). IMPORTANT: this is currently unwired from the report flow — report queries are compiled by internal/query, not written by a model. The package is retained as the plumbing for future LLM features.",
+  "files": {
+    "provider_interface": "backend/internal/llm/provider.go",
+    "generator": "backend/internal/llm/generator.go",
+    "prompt": "backend/internal/llm/prompt.go",
+    "providers": "backend/internal/llm/claude_provider.go, openai_provider.go",
+    "crypto": "backend/internal/llm/crypto.go",
+    "store": "backend/internal/llm/store.go",
+    "handlers": "backend/internal/llm/handlers.go",
+    "migration": "backend/internal/migrate/migrations/0005_create_llm_configs.sql"
+  },
+  "exposes": [
+    "Provider interface: GenerateQuery(ctx, schema, prompt) (string, error)",
+    "NewProvider(providerType, apiKey); SupportedProviders = [claude, openai]",
+    "Generator.GenerateQuery(ctx, userID, QueryRequest{Dialect, Schema, Prompt}) — NOT called by anything today",
+    "Store.Upsert / Get / GetWithKey / Delete (one config per user, UNIQUE user_id)",
+    "Encryptor.Encrypt/Decrypt (AES-256-GCM, LLM_ENCRYPTION_KEY)",
+    "HTTP: GET/PUT/DELETE /api/llm-config",
+    "ErrNotFound, ErrProviderFailed, ErrEmptyQuery"
+  ],
+  "depends_on": ["auth (UserIDFromContext)", "pgx/v5", "Anthropic Messages API", "OpenAI Chat Completions API"],
+  "key_notes": [
+    "Nothing wires Generator into report generation. main.go constructs llm.Store + llm.Handlers only — NOT llm.NewGenerator. If a task says 'the LLM writes the query', that is stale: see internal/query.",
+    "Hardcoded models: claudeModel = \"claude-sonnet-5\" (claude_provider.go), openAIModel = \"gpt-4o\" (openai_provider.go). The PRD says clients pick their model, but today only the provider is user-configurable.",
+    "The API key is stored encrypted and NEVER returned by any endpoint — configResponse carries only id/provider/timestamps. Keep it that way.",
+    "PUT /api/llm-config validates the provider by calling NewProvider (registry membership) but does not verify the key against the provider's API.",
+    "The encryptor here is a separate instance keyed by LLM_ENCRYPTION_KEY, distinct from datasource's DATASOURCE_ENCRYPTION_KEY. crypto.go is duplicated code between the two packages, intentionally — they are independent key domains.",
+    "sanitizeQuery() (prompt.go) strips markdown fences and trailing semicolons from model output. Its tests are the reason it survives; it's dead code with respect to the report path.",
+    "Both providers use http.DefaultClient with no explicit timeout — the caller's context is the only bound."
+  ],
+  "updated_at": "2026-08-13T22:09:25Z"
+}

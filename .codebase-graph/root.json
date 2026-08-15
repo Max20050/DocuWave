@@ -1,0 +1,53 @@
+{
+  "summary": "DocuWave is a hybrid-SaaS report automation tool: a Go net/http API plus a Next.js app. A user connects their own data source (Postgres, MySQL, Google Sheets), its schema is introspected once and stored, and a report is saved as a structured query Spec + a template ID + a slot mapping + a list of output formats. Running a report always goes through report.Runner: compile the Spec against the stored schema, run it read-only, project the template's Doc, render PDF/XLSX/CSV in memory. Report queries are NOT written by an LLM any more — the llm package is retained but unwired from the report flow. Email delivery and scheduling from the PRD are not built yet.",
+  "entry_points": [
+    "backend/cmd/api/main.go",
+    "frontend/app/layout.tsx",
+    "docker-compose.yml"
+  ],
+  "domains": [
+    "auth",
+    "datasource",
+    "query",
+    "template",
+    "render",
+    "report",
+    "llm",
+    "frontend",
+    "platform"
+  ],
+  "tech_stack": {
+    "language": "Go 1.24 (backend), TypeScript (frontend)",
+    "framework": "net/http with Go 1.22+ method+pattern routing (no web framework); Next.js 16 App Router + React 19 + Tailwind v4",
+    "database": "PostgreSQL 17 via pgx/v5 pgxpool; embedded SQL migrations, no ORM",
+    "external_services": [
+      "Google OAuth (sign-in)",
+      "Google Sheets API v4 + Drive v3 + gviz query endpoint",
+      "Anthropic Claude API",
+      "OpenAI API",
+      "user-supplied Postgres/MySQL databases"
+    ]
+  },
+  "key_conventions": [
+    "Backend is one Go module (github.com/Max20050/docuwave) with feature packages under backend/internal/<domain>/. No shared 'models' or 'utils' package.",
+    "Within a package: store.go = pgx persistence, handlers.go = HTTP, plus domain files. writeJSON/writeError helpers are duplicated per package on purpose (unexported, package-local).",
+    "Every route is registered in one place: backend/cmd/api/main.go. Dependencies are constructed there and injected; there is no DI container or global state.",
+    "Protected routes are wrapped as authHandlers.RequireAuth(h.Method); the handler reads the caller via auth.UserIDFromContext(r.Context()).",
+    "Multi-tenancy is enforced in SQL: every store query filters `WHERE user_id = $n`. There is no row-level security or middleware substitute.",
+    "Sentinel errors are exported per package (ErrNotFound, ErrInvalidSpec, ErrUnknownTemplate...) and mapped to HTTP status in a writeXError helper in handlers.go. Use errors.Is, never string matching.",
+    "Secrets at rest are AES-256-GCM sealed with a nonce prefix, keyed by a base64 32-byte env var. Two independent keys/encryptors exist: DATASOURCE_ENCRYPTION_KEY (datasource.Encryptor) and LLM_ENCRYPTION_KEY (llm.Encryptor).",
+    "Migrations are numbered SQL files in backend/internal/migrate/migrations/, go:embed'd and run automatically at startup in filename order. Add the next NNNN_ file; never edit an applied one.",
+    "Pluggable layers are map/slice registries: datasource.connectorRegistry, llm.providerRegistry, render.renderers, template.Registry. Adding a variant = new file + one registry entry, no pipeline change.",
+    "Comments explain WHY, not what. The existing code is densely commented in that style — match it.",
+    "Frontend: pages are app/<route>/page.tsx, shared components are app/ui/<kebab-case>.tsx, and ALL backend calls go through frontend/lib/api.ts (typed wrapper + ApiError). Auth token lives in localStorage via lib/auth-context.tsx.",
+    "Tests are Go table-driven _test.go files next to the code. There are no frontend tests; CI runs go test, eslint, tsc --noEmit, and docker compose build."
+  ],
+  "notable_gaps": [
+    "frontend/lib/api.ts and app/ui/report-builder.tsx are OUT OF SYNC with the backend: they still POST a `query` string and call POST /api/reports/generate-query, which main.go no longer registers. The backend now expects a structured `querySpec`. Report creation from the UI is broken until the frontend is ported to the Spec builder.",
+    "MVP items from the PRD that do not exist yet: email delivery, scheduling (fixed interval + manual trigger), and a report update/edit endpoint.",
+    "backend/internal/query/query.go references documents/v1/query-building.md, which is not in the repo.",
+    "frontend/app/page.tsx is still the create-next-app template, and layout.tsx metadata still says 'Create Next App'.",
+    "backend/api.exe is a committed build artifact."
+  ],
+  "updated_at": "2026-08-13T22:09:25Z"
+}

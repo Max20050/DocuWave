@@ -1,0 +1,40 @@
+{
+  "name": "template",
+  "summary": "Turns query rows plus a user's slot mapping into a document, two ways: Render() produces a self-contained HTML page (used by the preview and future email bodies), Document() projects the same content as a structural Doc that the file renderers build from. The Registry is the seam a future drag-and-drop builder plugs into.",
+  "files": {
+    "interface_and_validation": "backend/internal/template/template.go",
+    "registry": "backend/internal/template/registry.go",
+    "doc_model": "backend/internal/template/doc.go",
+    "html_shell_and_formatting": "backend/internal/template/document.go",
+    "starters": "backend/internal/template/tabular.go, grouped.go, kpi.go",
+    "design_doc": "documents/v1/report-templates.md",
+    "tests": "template_test.go, registry_test.go, render_test.go, doc_test.go, document_test.go"
+  },
+  "exposes": [
+    "Template interface: Meta() Meta, Render(Data, Config) ([]byte, error)",
+    "Documenter interface (optional): Document(Data, Config) Doc",
+    "Meta{ID, Name, Description, Slots}; Slot{Key, Label, Kind, Description, Required, Numeric}; SlotKind = text|column|columns",
+    "Config{Columns map[string][]string, Text map[string]string} — persisted as reports.template_config JSONB",
+    "Data{Columns, Rows, GeneratedAt}",
+    "Validate(t, cfg, queryColumns) error — pass nil columns to skip the column-existence check",
+    "NewRegistry(templates...), Starters() = [Tabular, GroupedTotals, KPISummary]",
+    "Registry.Get / List / ValidateConfig / Render / Document",
+    "Doc{Title, Subtitle, Footer, GeneratedAt, Blocks}; Block{Title, Note, Tiles, Table}; Table{Columns, Rows, Total}; Value{Text, Number, IsNumber}",
+    "ErrUnknownTemplate, ErrInvalidConfig"
+  ],
+  "depends_on": ["nothing in this repo — pure Go stdlib (html/template)"],
+  "key_notes": [
+    "Template IDs are the persisted contract: 'tabular', 'grouped-totals', 'kpi-summary'. Slot keys ('title', 'columns', 'group', 'metrics', 'note') are persisted too. Renaming either breaks saved reports.",
+    "Adding a template = new file implementing Template (+ Document if you want control over PDF/XLSX) and one entry in Starters(). Nothing else changes; the UI builds its mapping controls entirely from Meta.",
+    "NewRegistry PANICS on duplicate template IDs — it is built at startup in main.go, so that's a wiring error, not a runtime one.",
+    "Why two projections: the file renderers can't parse the HTML. Both come out of one computation inside the template (e.g. GroupedTotals.group()), which is what guarantees the PDF, the spreadsheet and the preview agree.",
+    "A template without Document() still renders to every format — DocumentOf falls back to rawDocument(), printing every query column.",
+    "Value carries both Text (what a page prints, incl. thousands separators) and Number+IsNumber (what a spreadsheet cell holds). Keeping them in sync is the whole point of the type.",
+    "Data.numeric(index) decides alignment/numeric-ness: EVERY non-blank value in the column must parse as a number, so a single label makes the whole column text. toNumber() also parses spreadsheet-formatted text like \"$1,234.50\".",
+    "Data.resolve() silently DROPS mapped column names the query doesn't return, rather than failing — Validate is the gate that reports them, and a partial preview beats an error while a user is still mapping.",
+    "Templates must be safe for concurrent use: the registry holds one value per template. The starters are empty structs, so keep them stateless.",
+    "The HTML is a full standalone page with inlined CSS and no scripts, meant to be shown in an iframe with an empty sandbox. mustDocument() clones the shared shell at package init and panics on a bad body.",
+    "noRowsNote ('The query returned no rows.') is the shared empty-state string across HTML and Doc so every format says the same thing. Each template also has its own unmapped-state note for previews."
+  ],
+  "updated_at": "2026-08-13T22:09:25Z"
+}

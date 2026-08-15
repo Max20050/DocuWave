@@ -1,0 +1,47 @@
+{
+  "name": "datasource",
+  "summary": "The pluggable connector layer plus everything about a saved data source: encrypted credentials, the Google Sheets OAuth connection, schema introspection, and read-only query execution. The largest backend package and the one every report path reaches through.",
+  "files": {
+    "connector_interface": "backend/internal/datasource/connector.go",
+    "resolver": "backend/internal/datasource/resolver.go",
+    "sql_connectors": "backend/internal/datasource/postgres_connector.go, mysql_connector.go",
+    "sheets_connector": "backend/internal/datasource/sheets_connector.go",
+    "schema_model": "backend/internal/datasource/schema.go",
+    "schema_provider": "backend/internal/datasource/schema_provider.go",
+    "schema_store": "backend/internal/datasource/schema_store.go",
+    "query_result": "backend/internal/datasource/query.go",
+    "crypto": "backend/internal/datasource/crypto.go",
+    "store": "backend/internal/datasource/store.go",
+    "sheets_store": "backend/internal/datasource/sheets_store.go",
+    "sheets_oauth": "backend/internal/datasource/sheets_oauth.go",
+    "handlers": "backend/internal/datasource/handlers.go, schema_handlers.go, sheets_handlers.go",
+    "migrations": "0003_create_data_sources.sql, 0004_add_google_sheets_sources.sql, 0008_create_data_source_schemas.sql"
+  },
+  "exposes": [
+    "Connector interface: TestConnection(ctx), Introspect(ctx) (Schema, error), QueryLanguage() string, RunQuery(ctx, query, args, limit) (QueryResult, error)",
+    "NewConnector(sourceType, ConnectionConfig) — factory over connectorRegistry; SupportedTypes = [postgres, mysql]",
+    "Resolver.Resolve(ctx, userID, dataSourceID) (DataSource, Connector, error) — the one way to get a live connector for a saved source",
+    "SchemaProvider.Schema(ctx, userID, dsID) / .Refresh(...) (Schema, time.Time, error)",
+    "Schema{Tables []Table, Fields []string} and Schema.Describe() string (LLM-facing text form)",
+    "QueryResult{Columns, Rows, Truncated}; PreviewRowLimit = 50",
+    "Encryptor.Encrypt/Decrypt (AES-256-GCM)",
+    "Store CRUD (Create, CreateSheetsSource, List, Get, Delete), SchemaStore, SheetsStore",
+    "HTTP: GET/POST /api/datasources, POST /api/datasources/test, DELETE /api/datasources/{id}, GET /api/datasources/{id}/schema, POST /api/datasources/{id}/schema/refresh, the four google-sheets routes",
+    "ErrNotFound, ErrConnectionNotFound, ErrSchemaNotFound, ErrIntrospectFailed"
+  ],
+  "depends_on": ["auth (UserIDFromContext, TokenIssuer)", "pgx/v5", "go-sql-driver/mysql", "golang.org/x/oauth2", "Google Sheets/Drive APIs"],
+  "key_notes": [
+    "google_sheets is deliberately NOT in connectorRegistry: its connector is built from an OAuth token rather than a ConnectionConfig, so Resolver.connectorFor special-cases sheetsSourceType. Adding another OAuth-shaped source means touching that function.",
+    "One data_sources table holds both shapes. SQL columns (host/port/db_name/username/encrypted_password) and Sheets columns (spreadsheet_id/spreadsheet_name/google_connection_id) are all nullable, and DataSource uses *string/*int for them. migration 0004 dropped the NOT NULLs.",
+    "Schema is read once at connect time and stored in data_source_schemas (JSONB, one row per source). Query building never touches the user's DB — a stale schema is the usual cause of 'X is not a table/column, refresh its schema' errors. Users fix it via POST .../schema/refresh.",
+    "storeSchema() in handlers.go is best-effort: if introspection fails at connect time the source is still saved and the failure is only logged. SchemaProvider.Schema then lazily retries on first read.",
+    "SQL RunQuery opens a READ ONLY transaction as a second line of defence; the compiled query text comes from internal/query and is never client-supplied. Both SQL connectors open a fresh connection per call — no pooling of user databases.",
+    "The Sheets connector reads only the FIRST sheet of a spreadsheet, and its 'schema' is the header row (Schema.Fields). Queries go to the gviz endpoint (docs.google.com/.../gviz/tq), which returns JSONP that unwrapGviz strips. That endpoint has NO parameter binding, so RunQuery errors if args are non-empty — internal/query/sheets.go inlines literals instead.",
+    "Sheets OAuth is a separate flow from sign-in with its own scopes (spreadsheets.readonly + drive.metadata.readonly), its own cookies (sheets_oauth_state, sheets_oauth_user), and requires a refresh token — it uses AccessTypeOffline + ApprovalForce and rejects a grant without one.",
+    "GET /api/datasources/google-sheets/login takes the JWT as a ?token= query param, because it is reached by a plain browser navigation that cannot set an Authorization header.",
+    "Timeouts: testConnectionTimeout = 5s (handlers.go), introspectTimeout = 15s (schema_handlers.go).",
+    "postgres DSN uses sslmode=prefer; MySQL DSN uses timeout=5s. Credentials are URL-escaped in the Postgres DSN but NOT in the MySQL one.",
+    "normalizeValue (query.go) converts driver []byte to string and time.Time to RFC3339 so results survive JSON encoding — everything downstream assumes that normalization happened."
+  ],
+  "updated_at": "2026-08-13T22:09:25Z"
+}

@@ -1,0 +1,36 @@
+{
+  "name": "report",
+  "summary": "The orchestration domain. Stores a report configuration (data source + query Spec + template + slot mapping + formats) and owns Runner, the single end-to-end pipeline every produced report goes through: compile the Spec against the stored schema, run it read-only, project the template's Doc, render the files. Also serves the preview and download HTTP endpoints.",
+  "files": {
+    "pipeline": "backend/internal/report/runner.go",
+    "store": "backend/internal/report/store.go",
+    "handlers": "backend/internal/report/handlers.go",
+    "migrations": "0006_create_reports.sql, 0007_add_report_templates.sql, 0009_add_report_query_spec.sql, 0010_add_report_formats.sql",
+    "tests": "backend/internal/report/runner_test.go, handlers_test.go"
+  },
+  "exposes": [
+    "Runner.Document(ctx, rep) (template.Doc, error) — query + template half, shared by every format",
+    "Runner.Render(ctx, rep) ([]render.Artifact, error) — for email delivery / scheduling (not yet built)",
+    "Runner.RenderFormat(ctx, rep, format) (render.Artifact, error) — for the download endpoint",
+    "Runner.prepare(...) (unexported) — the ONLY place a query is compiled in this package; handlers call it directly for previews",
+    "Report struct (QuerySpec query.Spec, Query string, TemplateID, TemplateConfig, Formats []render.Format)",
+    "Store.Create / Get / List / Delete",
+    "HTTP: GET /api/report-templates, POST /api/reports/preview, POST /api/reports/preview-template, GET+POST /api/reports, GET /api/reports/{id}/download?format=, DELETE /api/reports/{id}",
+    "ErrNotFound, ErrNotRunnable, ErrQueryFailed"
+  ],
+  "depends_on": ["datasource (Resolver, SchemaProvider, QueryResult)", "query (Spec, Compile, DialectFor)", "template (Registry, Data, Config, Doc)", "render (Format, Artifact, RenderAll)", "auth (UserIDFromContext)", "pgx/v5"],
+  "key_notes": [
+    "Runner is the ONLY path that produces a report. Preview, download, and the future scheduled/email delivery all go through it, which is what makes 'what you preview is what recipients get' true. Do not add a second rendering path.",
+    "reports.query stores the compiled SQL as READ-ONLY documentation for the user. It is never executed and never accepted back from a client; query_spec is the source of truth and is recompiled on every run so relative date windows stay relative.",
+    "A report saved before the query-spec change has an empty spec; Spec.IsZero() makes Runner.Document return ErrNotRunnable (HTTP 409) telling the user to rebuild it.",
+    "POST /api/reports does NOT run the query — it validates the template config against the template's slots only (queryColumns=nil) and compiles the spec (which also proves the data source belongs to the caller). Rendering re-validates the mapping against the columns actually returned.",
+    "There is no update/PUT endpoint for a report. Editing means delete + create.",
+    "Formats: a create request that OMITS `formats` defaults to [pdf]; one that sends an empty array is rejected. A DB CHECK (cardinality(formats) >= 1) backs this up, and scanReport re-parses stored names through render.ParseFormats so an unknown format fails loudly rather than silently delivering fewer files.",
+    "Download without ?format= returns rep.Formats[0]. RenderFormat refuses a format the report isn't configured for.",
+    "Error mapping lives in handlers.go helpers — writeQueryError / writeTemplateError / writeRenderError / writeResolveError. ErrQueryFailed maps to 502 (the query is ours, so a failure is the source's end); ErrInvalidSpec to 400.",
+    "queryTimeout = 30s bounds every run. Preview limits rows via previewLimit() (min of spec limit and datasource.PreviewRowLimit=50); a full run uses runLimit() and passes the connector the same cap the spec asked for.",
+    "Failures inside Runner are log.Printf'd as well as returned, because scheduled runs are unattended.",
+    "selectReports INNER JOINs data_sources for the source name — safe because the FK cascades on delete, so a report always has its source."
+  ],
+  "updated_at": "2026-08-13T22:09:25Z"
+}

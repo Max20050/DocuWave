@@ -322,6 +322,11 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := validatePlaceholderFilters(req.QuerySpec.PlaceholderFilters); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// The mapping is checked against the template's slots, but not against the
 	// query's columns: that would mean running the query to save a report.
 	// Rendering re-checks it against the rows it actually gets.
@@ -363,6 +368,23 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusCreated, toResponse(created))
+}
+
+// validatePlaceholderFilters checks the shape of a spec's placeholder filters.
+// They're never compiled here — a recipient resolves them into literal Filters
+// later — so this is the only check they get before being stored.
+func validatePlaceholderFilters(filters []query.PlaceholderFilter) error {
+	for _, f := range filters {
+		switch {
+		case f.Column == "":
+			return fmt.Errorf("a placeholder filter's column is required")
+		case f.RecipientField == "":
+			return fmt.Errorf("a placeholder filter's recipientField is required")
+		case !query.IsOperator(f.Operator):
+			return fmt.Errorf("unknown placeholder filter operator: %s", f.Operator)
+		}
+	}
+	return nil
 }
 
 // missingField names the first required field a request left empty. The query

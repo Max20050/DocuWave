@@ -32,10 +32,7 @@ export default function ReportsPage() {
   const [running, setRunning] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) {
-      router.replace("/login");
-      return;
-    }
+    if (!token) return;
     Promise.all([listReports(token), listDataSources(token), listReportTemplates(token)])
       .then(([loadedReports, loadedSources, loadedTemplates]) => {
         setReports(loadedReports);
@@ -98,9 +95,6 @@ export default function ReportsPage() {
     <div className="flex flex-1 flex-col items-center gap-10 px-6 py-16">
       <div className="flex w-full max-w-2xl items-center justify-between">
         <h1 className="text-2xl font-semibold">Reports</h1>
-        <Link href="/dashboard" className="text-sm underline">
-          Back to dashboard
-        </Link>
       </div>
 
       <div className="flex w-full max-w-2xl flex-col gap-3">

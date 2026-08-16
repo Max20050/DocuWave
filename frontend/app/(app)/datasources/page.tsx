@@ -2,7 +2,6 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import Link from "next/link";
 import {
   createDataSource,
   createGoogleSheetsDataSource,
@@ -36,10 +35,7 @@ function DataSourcesContent() {
   const sheetsConnectionId = searchParams.get("sheetsConnection");
 
   useEffect(() => {
-    if (!token) {
-      router.replace("/login");
-      return;
-    }
+    if (!token) return;
     listDataSources(token)
       .then(setSources)
       .catch(() => {
@@ -89,10 +85,7 @@ function DataSourcesContent() {
   return (
     <div className="flex flex-1 flex-col items-center gap-10 px-6 py-16">
       <div className="flex w-full max-w-md items-center justify-between">
-        <h1 className="text-2xl font-semibold">Data sources</h1>
-        <Link href="/dashboard" className="text-sm underline">
-          Back to dashboard
-        </Link>
+        <h1 className="text-2xl font-semibold">Connectors</h1>
       </div>
 
       <div className="flex w-full max-w-md flex-col gap-3">

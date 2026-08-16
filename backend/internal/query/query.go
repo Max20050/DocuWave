@@ -14,6 +14,7 @@ package query
 import (
 	"errors"
 	"fmt"
+	"slices"
 )
 
 // ErrInvalidSpec means the specification doesn't describe a query this data
@@ -132,6 +133,13 @@ func Operators() []Operator {
 	}
 }
 
+// IsOperator reports whether op is one Operators lists. Callers validating a
+// specification before it's compiled use this instead of reaching into the
+// unexported arity table.
+func IsOperator(op Operator) bool {
+	return slices.Contains(Operators(), op)
+}
+
 // Field is one column of the result, optionally aggregated.
 type Field struct {
 	// Column names a column of the spec's table. It is empty only for a count
@@ -167,6 +175,18 @@ type Sort struct {
 	Descending bool      `json:"descending,omitempty"`
 }
 
+// PlaceholderFilter is a filter whose value isn't known yet: it names a
+// recipient attribute the value will come from once the report is run for a
+// specific recipient ("email", "name", or a key into their free-form
+// attributes). It never reaches Compile — resolving it into a literal Filter
+// is the delivery pipeline's job, done immediately before compiling for a
+// given recipient, so an unresolved placeholder can never reach compiled SQL.
+type PlaceholderFilter struct {
+	Column         string   `json:"column"`
+	Operator       Operator `json:"operator"`
+	RecipientField string   `json:"recipientField"`
+}
+
 // Spec is a report's query: what to read, from where, and in what shape. It is
 // stored with the report and compiled afresh on every run.
 type Spec struct {
@@ -175,7 +195,10 @@ type Spec struct {
 	Table   string   `json:"table,omitempty"`
 	Fields  []Field  `json:"fields"`
 	Filters []Filter `json:"filters,omitempty"`
-	Sorts   []Sort   `json:"sorts,omitempty"`
+	// PlaceholderFilters are not part of Filters and Compile never sees them —
+	// see PlaceholderFilter.
+	PlaceholderFilters []PlaceholderFilter `json:"placeholderFilters,omitempty"`
+	Sorts              []Sort              `json:"sorts,omitempty"`
 	// Limit caps the rows the report covers. Zero means DefaultRowLimit.
 	Limit int `json:"limit,omitempty"`
 }

@@ -2,7 +2,6 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import Link from "next/link";
 import {
   deleteLLMConfig,
   getLLMConfig,
@@ -25,10 +24,7 @@ export default function SettingsPage() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!token) {
-      router.replace("/login");
-      return;
-    }
+    if (!token) return;
     getLLMConfig(token)
       .then(setConfig)
       .catch(() => {
@@ -66,9 +62,6 @@ export default function SettingsPage() {
     <div className="flex flex-1 flex-col items-center gap-10 px-6 py-16">
       <div className="flex w-full max-w-md items-center justify-between">
         <h1 className="text-2xl font-semibold">Settings</h1>
-        <Link href="/dashboard" className="text-sm underline">
-          Back to dashboard
-        </Link>
       </div>
 
       <div className="flex w-full max-w-md flex-col gap-4">

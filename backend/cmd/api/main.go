@@ -14,6 +14,7 @@ import (
 	"github.com/Max20050/docuwave/internal/datasource"
 	"github.com/Max20050/docuwave/internal/llm"
 	"github.com/Max20050/docuwave/internal/migrate"
+	"github.com/Max20050/docuwave/internal/recipient"
 	"github.com/Max20050/docuwave/internal/report"
 	"github.com/Max20050/docuwave/internal/template"
 )
@@ -109,6 +110,10 @@ func main() {
 	reportRunner := report.NewRunner(resolver, schemas, templates)
 	reportHandlers := report.NewHandlers(reportStore, reportRunner, templates)
 
+	recipientStore := recipient.NewStore(pool)
+	recipientGroups := recipient.NewGroupStore(pool)
+	recipientHandlers := recipient.NewHandlers(recipientStore, recipientGroups)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -141,6 +146,15 @@ func main() {
 	mux.HandleFunc("POST /api/reports", authHandlers.RequireAuth(reportHandlers.Create))
 	mux.HandleFunc("GET /api/reports/{id}/download", authHandlers.RequireAuth(reportHandlers.Download))
 	mux.HandleFunc("DELETE /api/reports/{id}", authHandlers.RequireAuth(reportHandlers.Delete))
+	mux.HandleFunc("GET /api/recipients", authHandlers.RequireAuth(recipientHandlers.List))
+	mux.HandleFunc("POST /api/recipients", authHandlers.RequireAuth(recipientHandlers.Create))
+	mux.HandleFunc("DELETE /api/recipients/{id}", authHandlers.RequireAuth(recipientHandlers.Delete))
+	mux.HandleFunc("GET /api/recipient-groups", authHandlers.RequireAuth(recipientHandlers.ListGroups))
+	mux.HandleFunc("POST /api/recipient-groups", authHandlers.RequireAuth(recipientHandlers.CreateGroup))
+	mux.HandleFunc("DELETE /api/recipient-groups/{id}", authHandlers.RequireAuth(recipientHandlers.DeleteGroup))
+	mux.HandleFunc("GET /api/recipient-groups/{id}/members", authHandlers.RequireAuth(recipientHandlers.ListMembers))
+	mux.HandleFunc("POST /api/recipient-groups/{id}/members", authHandlers.RequireAuth(recipientHandlers.AddMember))
+	mux.HandleFunc("DELETE /api/recipient-groups/{id}/members/{recipientId}", authHandlers.RequireAuth(recipientHandlers.RemoveMember))
 
 	port := os.Getenv("PORT")
 	if port == "" {

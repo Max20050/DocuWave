@@ -286,7 +286,10 @@ export type Report = {
   dataSourceName: string;
   name: string;
   prompt: string;
+  // query is the SQL the server compiled from querySpec, shown for the user to
+  // read. It is never sent back — the spec is the source of truth.
   query: string;
+  querySpec: QuerySpec;
   templateId: string;
   templateConfig: TemplateConfig;
   formats: ReportFormat[];
@@ -294,24 +297,120 @@ export type Report = {
   updatedAt: string;
 };
 
-export type GeneratedQuery = {
-  query: string;
-  // The query language the source speaks, e.g. "PostgreSQL SQL".
-  dialect: string;
+// Aggregate is how a field's values are collapsed across a group. Mirrors
+// backend/internal/query/query.go's Aggregate.
+export type Aggregate = "" | "sum" | "avg" | "min" | "max" | "count";
+
+export const AGGREGATES: { value: Aggregate; label: string }[] = [
+  { value: "", label: "None" },
+  { value: "sum", label: "Sum" },
+  { value: "avg", label: "Average" },
+  { value: "min", label: "Min" },
+  { value: "max", label: "Max" },
+  { value: "count", label: "Count" },
+];
+
+// Operator is a filter comparison. Mirrors query.go's Operator.
+export type Operator =
+  | "eq"
+  | "neq"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "contains"
+  | "in"
+  | "between"
+  | "is_null"
+  | "is_not_null"
+  | "last_days"
+  | "this_month"
+  | "last_month";
+
+// OperatorArity says how many values an operator's UI needs to collect. Mirrors
+// query.go's operatorArities whitelist — kept in sync by hand, since the server
+// is the one place that actually enforces it.
+export type OperatorArity = "one" | "many" | "pair" | "none" | "count";
+
+export const OPERATORS: { value: Operator; label: string; arity: OperatorArity }[] = [
+  { value: "eq", label: "Equals", arity: "one" },
+  { value: "neq", label: "Not equals", arity: "one" },
+  { value: "gt", label: "Greater than", arity: "one" },
+  { value: "gte", label: "Greater than or equal", arity: "one" },
+  { value: "lt", label: "Less than", arity: "one" },
+  { value: "lte", label: "Less than or equal", arity: "one" },
+  { value: "contains", label: "Contains", arity: "one" },
+  { value: "in", label: "In (comma separated)", arity: "many" },
+  { value: "between", label: "Between", arity: "pair" },
+  { value: "is_null", label: "Is empty", arity: "none" },
+  { value: "is_not_null", label: "Is not empty", arity: "none" },
+  { value: "last_days", label: "In the last N days", arity: "count" },
+  { value: "this_month", label: "This month", arity: "none" },
+  { value: "last_month", label: "Last month", arity: "none" },
+];
+
+export type QueryField = {
+  column: string;
+  aggregate?: Aggregate;
 };
+
+export type QueryFilter = {
+  column: string;
+  operator: Operator;
+  value?: unknown;
+  values?: unknown[];
+};
+
+export type QuerySort = {
+  column: string;
+  aggregate?: Aggregate;
+  descending?: boolean;
+};
+
+// PlaceholderFilter is a filter whose value isn't known yet: it names a
+// recipient attribute ("email", "name", or a key into their free-form
+// attributes) the value will come from once the report is sent to a specific
+// recipient. It never affects preview — the server keeps it out of query
+// compilation entirely until a future delivery step resolves it.
+export type PlaceholderFilter = {
+  column: string;
+  operator: Operator;
+  recipientField: string;
+};
+
+// QuerySpec is a report's query: what to read, from where, and in what shape.
+// Mirrors backend/internal/query/query.go's Spec. It never carries query text —
+// every identifier in it is checked against the data source's stored schema
+// when the server compiles it.
+export type QuerySpec = {
+  table?: string;
+  fields: QueryField[];
+  filters?: QueryFilter[];
+  placeholderFilters?: PlaceholderFilter[];
+  sorts?: QuerySort[];
+  limit?: number;
+};
+
+export function emptyQuerySpec(): QuerySpec {
+  return { table: "", fields: [], filters: [], placeholderFilters: [], sorts: [] };
+}
 
 // Cell values come straight from the data source, so anything JSON can hold.
 export type QueryPreview = {
   columns: string[];
   rows: unknown[][];
   truncated: boolean;
+  // sql is what the spec compiled to, shown so the user can see what their
+  // report actually reads.
+  sql: string;
+  language: string;
 };
 
 export type ReportInput = {
   name: string;
   dataSourceId: string;
   prompt: string;
-  query: string;
+  querySpec: QuerySpec;
   templateId: string;
   templateConfig: TemplateConfig;
   formats: ReportFormat[];
@@ -331,7 +430,7 @@ export async function previewReportTemplate(
   token: string,
   input: {
     dataSourceId: string;
-    query: string;
+    querySpec: QuerySpec;
     templateId: string;
     templateConfig: TemplateConfig;
   },
@@ -348,31 +447,17 @@ export async function previewReportTemplate(
   return body.html;
 }
 
-export async function generateReportQuery(
+// previewReport compiles the specification on the server and runs it
+// read-only, so the user can see what the report will contain before saving it.
+export async function previewReport(
   token: string,
   dataSourceId: string,
-  prompt: string,
-): Promise<GeneratedQuery> {
-  const response = await authFetch("/api/reports/generate-query", token, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dataSourceId, prompt }),
-  });
-  if (!response.ok) {
-    throw new ApiError(response.status, await parseErrorMessage(response));
-  }
-  return response.json();
-}
-
-export async function previewReportQuery(
-  token: string,
-  dataSourceId: string,
-  query: string,
+  querySpec: QuerySpec,
 ): Promise<QueryPreview> {
   const response = await authFetch("/api/reports/preview", token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ dataSourceId, query }),
+    body: JSON.stringify({ dataSourceId, querySpec }),
   });
   if (!response.ok) {
     throw new ApiError(response.status, await parseErrorMessage(response));
@@ -428,6 +513,110 @@ function filenameFrom(disposition: string | null, fallback: string): string {
 
 export async function deleteReport(token: string, id: string): Promise<void> {
   const response = await authFetch(`/api/reports/${id}`, token, { method: "DELETE" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}
+
+// A recipient's attributes are free-form values a report's inputs can be
+// filled from at send time (e.g. "region"), so anything JSON can hold.
+export type Recipient = {
+  id: string;
+  email: string;
+  name: string;
+  attributes: Record<string, unknown>;
+  createdAt: string;
+};
+
+export type RecipientInput = {
+  email: string;
+  name: string;
+  attributes: Record<string, unknown>;
+};
+
+export type RecipientGroup = {
+  id: string;
+  name: string;
+  createdAt: string;
+};
+
+export async function listRecipients(token: string): Promise<Recipient[]> {
+  const response = await authFetch("/api/recipients", token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function createRecipient(token: string, input: RecipientInput): Promise<Recipient> {
+  const response = await authFetch("/api/recipients", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function deleteRecipient(token: string, id: string): Promise<void> {
+  const response = await authFetch(`/api/recipients/${id}`, token, { method: "DELETE" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}
+
+export async function listRecipientGroups(token: string): Promise<RecipientGroup[]> {
+  const response = await authFetch("/api/recipient-groups", token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function createRecipientGroup(token: string, name: string): Promise<RecipientGroup> {
+  const response = await authFetch("/api/recipient-groups", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function deleteRecipientGroup(token: string, id: string): Promise<void> {
+  const response = await authFetch(`/api/recipient-groups/${id}`, token, { method: "DELETE" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}
+
+export async function listGroupMembers(token: string, groupId: string): Promise<Recipient[]> {
+  const response = await authFetch(`/api/recipient-groups/${groupId}/members`, token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function addGroupMember(token: string, groupId: string, recipientId: string): Promise<void> {
+  const response = await authFetch(`/api/recipient-groups/${groupId}/members`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ recipientId }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}
+
+export async function removeGroupMember(token: string, groupId: string, recipientId: string): Promise<void> {
+  const response = await authFetch(`/api/recipient-groups/${groupId}/members/${recipientId}`, token, {
+    method: "DELETE",
+  });
   if (!response.ok) {
     throw new ApiError(response.status, await parseErrorMessage(response));
   }

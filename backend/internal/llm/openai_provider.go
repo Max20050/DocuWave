@@ -36,10 +36,18 @@ type openAIResponse struct {
 }
 
 func (p *openAIProvider) GenerateQuery(ctx context.Context, schema string, prompt string) (string, error) {
+	return p.send(ctx, fmt.Sprintf("Schema:\n%s\n\nRequest:\n%s", schema, prompt))
+}
+
+func (p *openAIProvider) GenerateText(ctx context.Context, prompt string) (string, error) {
+	return p.send(ctx, prompt)
+}
+
+func (p *openAIProvider) send(ctx context.Context, content string) (string, error) {
 	reqBody := openAIRequest{
 		Model: openAIModel,
 		Messages: []openAIMessage{
-			{Role: "user", Content: fmt.Sprintf("Schema:\n%s\n\nRequest:\n%s", schema, prompt)},
+			{Role: "user", Content: content},
 		},
 	}
 	body, err := json.Marshal(reqBody)

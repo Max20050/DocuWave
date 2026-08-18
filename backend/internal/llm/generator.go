@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // ErrProviderFailed wraps anything the provider's API rejected — a bad key, a
@@ -67,4 +68,55 @@ func (g *Generator) GenerateQuery(ctx context.Context, userID string, req QueryR
 		return "", ErrEmptyQuery
 	}
 	return query, nil
+}
+
+// ErrEmptySummary is returned when the provider answered, but with nothing
+// worth printing.
+var ErrEmptySummary = errors.New("the LLM returned an empty summary")
+
+// GenerateSummary answers a free-text prompt with the calling user's own
+// configured provider — what a report's ai-summary blocks call to turn their
+// selected data and instructions into printed text. It returns ErrNotFound
+// when the user has configured no provider, and ErrProviderFailed when the
+// provider's API rejected the call.
+func (g *Generator) GenerateSummary(ctx context.Context, userID string, prompt string) (string, error) {
+	cfg, encryptedAPIKey, err := g.store.GetWithKey(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+
+	apiKey, err := g.encryptor.Decrypt(encryptedAPIKey)
+	if err != nil {
+		return "", fmt.Errorf("decrypt API key: %w", err)
+	}
+
+	provider, err := NewProvider(cfg.Provider, apiKey)
+	if err != nil {
+		return "", err
+	}
+
+	raw, err := provider.GenerateText(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrProviderFailed, err)
+	}
+
+	text := strings.TrimSpace(raw)
+	if text == "" {
+		return "", ErrEmptySummary
+	}
+	return text, nil
+}
+
+// HasProvider reports whether userID has an LLM provider configured, without
+// decrypting their key — what a report's save path checks before it'll let a
+// user activate an ai-summary block they can't yet run.
+func (g *Generator) HasProvider(ctx context.Context, userID string) (bool, error) {
+	_, err := g.store.Get(ctx, userID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }

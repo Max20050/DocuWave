@@ -9,6 +9,7 @@ import {
   createCustomTemplate,
   emptyQuerySpec,
   getDataSourceSchema,
+  getLLMConfig,
   listArchivedReportTemplates,
   listReportTemplates,
   previewReport,
@@ -18,6 +19,7 @@ import {
   type Aggregate,
   type DataSource,
   type DataSourceSchema,
+  type LLMConfig,
   type Operator,
   type OperatorArity,
   type PlaceholderFilter,
@@ -50,6 +52,10 @@ function errorMessage(err: unknown, fallback: string): string {
 
 function sameColumns(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((column, index) => column === right[index]);
+}
+
+function hasAISummaryBlock(blocks: { kind: string }[] | undefined): boolean {
+  return (blocks ?? []).some((b) => b.kind === "ai-summary");
 }
 
 // columnsFor reads the columns a data source's schema makes available: a
@@ -484,6 +490,11 @@ export function ReportBuilder({
   // normal template list and field mapping.
   const [customDraft, setCustomDraft] = useState<CustomTemplateDraft | null>(null);
 
+  // llmConfig is loaded once to warn about ai-summary blocks before save
+  // rather than letting the request fail — null means "none configured",
+  // not "still loading" (loading and none look the same to this warning).
+  const [llmConfig, setLlmConfig] = useState<LLMConfig | null>(null);
+
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -512,6 +523,12 @@ export function ReportBuilder({
         setArchivedTemplates(archived);
       })
       .catch((err) => setTemplatesError(errorMessage(err, "Failed to load report templates")));
+  }, [token]);
+
+  useEffect(() => {
+    getLLMConfig(token)
+      .then(setLlmConfig)
+      .catch(() => setLlmConfig(null));
   }, [token]);
 
   useEffect(() => {
@@ -703,6 +720,14 @@ export function ReportBuilder({
 
   const canPreview = spec.fields.length > 0 && (schema?.type === "google_sheets" || (spec.table ?? "") !== "");
 
+  // needsAIProvider blocks saving before the request would fail: whichever
+  // template is in play — the design being composed, or an already-saved one
+  // just picked — is checked for an ai-summary block, which needs its owner
+  // to have an LLM provider configured.
+  const selectedTemplate = templates.find((t) => t.id === templateId);
+  const blocksInUse = customDraft ? customDraft.blocks : selectedTemplate?.blocks;
+  const needsAIProvider = llmConfig === null && hasAISummaryBlock(blocksInUse);
+
   return (
     <div className="flex w-full flex-col gap-4">
       <div className="flex flex-col gap-1">
@@ -836,7 +861,18 @@ export function ReportBuilder({
                 onCancelCustomTemplate={() => setCustomDraft(null)}
                 onArchive={handleArchive}
                 onRestore={handleRestore}
+                token={token}
+                schema={schema}
+                dataSourceId={dataSourceId}
+                querySpec={spec}
               />
+
+              {needsAIProvider && (
+                <p className="text-sm text-amber-600 dark:text-amber-500">
+                  This template uses an AI summary block. Configure an LLM provider in settings before
+                  saving this report.
+                </p>
+              )}
 
               <div>
                 <button
@@ -884,7 +920,8 @@ export function ReportBuilder({
                 name.trim() === "" ||
                 preview === null ||
                 templateId === "" ||
-                formats.length === 0
+                formats.length === 0 ||
+                needsAIProvider
               }
               className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
             >

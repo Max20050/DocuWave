@@ -1,13 +1,34 @@
 "use client";
 
 import { useState } from "react";
-import { CUSTOM_BLOCK_KINDS, type CustomBlock, type CustomBlockKind, type ReportTemplate, type TemplateConfig, type TemplateSlot } from "@/lib/api";
+import {
+  CUSTOM_BLOCK_KINDS,
+  previewAISummary,
+  type AISummaryQuery,
+  type CustomBlock,
+  type CustomBlockKind,
+  type DataSourceSchema,
+  type QuerySpec,
+  type ReportTemplate,
+  type TemplateConfig,
+  type TemplateSlot,
+} from "@/lib/api";
 
 const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";
 const chipButtonClass =
   "rounded border border-black/[.1] px-2 py-0.5 text-xs transition-colors hover:bg-black/[.04] disabled:opacity-40 dark:border-white/[.15] dark:hover:bg-[#1a1a1a]";
 const smallButtonClass =
   "rounded border border-black/[.1] px-3 py-1.5 text-xs transition-colors hover:bg-black/[.04] disabled:opacity-40 dark:border-white/[.15] dark:hover:bg-[#1a1a1a]";
+
+// columnsFor reads the columns a data source's schema makes available: a
+// table's own columns for SQL sources, the sheet's header fields for Google
+// Sheets. Duplicated from report-builder.tsx rather than imported, since that
+// file already imports from this one.
+function columnsFor(schema: DataSourceSchema | null, table: string): string[] {
+  if (!schema) return [];
+  if (schema.type === "google_sheets") return schema.fields ?? [];
+  return schema.tables?.find((candidate) => candidate.name === table)?.columns.map((c) => c.name) ?? [];
+}
 
 // BUILD_YOUR_OWN_ID is the sentinel the picker uses for the "Build my own
 // design" card, which isn't a real template until the user saves a design.
@@ -123,6 +144,10 @@ export function TemplatePicker({
   onCancelCustomTemplate,
   onArchive,
   onRestore,
+  token,
+  schema,
+  dataSourceId,
+  querySpec,
 }: {
   templates: ReportTemplate[];
   archivedTemplates: ReportTemplate[];
@@ -140,6 +165,13 @@ export function TemplatePicker({
   onCancelCustomTemplate: () => void;
   onArchive: (templateId: string) => void;
   onRestore: (templateId: string) => void;
+  // token, schema, dataSourceId and querySpec are only needed for the
+  // "Probar resumen" test call an ai-summary block's prompt slot offers —
+  // every other control in this component works from columns/rows/config alone.
+  token: string;
+  schema: DataSourceSchema | null;
+  dataSourceId: string;
+  querySpec: QuerySpec;
 }) {
   const [showArchived, setShowArchived] = useState(false);
   const selected = templates.find((template) => template.id === templateId);
@@ -226,6 +258,7 @@ export function TemplatePicker({
           onChange={onCustomDraftChange}
           onSave={onSaveCustomTemplate}
           onCancel={onCancelCustomTemplate}
+          schema={schema}
         />
       )}
 
@@ -233,13 +266,28 @@ export function TemplatePicker({
         <div className="flex flex-col gap-4">
           <p className="text-sm font-medium">Field mapping</p>
           {selected.slots.map((slot) => (
-            <SlotControl
-              key={slot.key}
-              slot={slot}
-              columns={slot.numeric ? preferred(columns, numeric) : columns}
-              config={config}
-              onConfigChange={onConfigChange}
-            />
+            <div key={slot.key} className="flex flex-col gap-2">
+              <SlotControl
+                slot={slot}
+                columns={slot.numeric ? preferred(columns, numeric) : columns}
+                config={config}
+                onConfigChange={onConfigChange}
+              />
+              {/* An ai-summary block's prompt slot is always named
+                  "<blockId>:prompt" (see blocks.go's slotKey) — that suffix is
+                  unique to it, so it's how the mapping UI knows to offer a test
+                  call here rather than needing a slot kind of its own. */}
+              {slot.key.endsWith(":prompt") && (
+                <AISummaryTestButton
+                  blockId={slot.key.slice(0, -":prompt".length)}
+                  block={selected.blocks?.find((b) => b.id === slot.key.slice(0, -":prompt".length))}
+                  config={config}
+                  token={token}
+                  dataSourceId={dataSourceId}
+                  querySpec={querySpec}
+                />
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -299,11 +347,15 @@ function CustomTemplateBuilder({
   onChange,
   onSave,
   onCancel,
+  schema,
 }: {
   draft: CustomTemplateDraft;
   onChange: (draft: CustomTemplateDraft) => void;
   onSave: () => void;
   onCancel: () => void;
+  // schema is only needed for an ai-summary block's additional queries — every
+  // other block kind here has nothing to do with the report's data source.
+  schema: DataSourceSchema | null;
 }) {
   function setBlocks(blocks: CustomBlock[]) {
     onChange({ ...draft, blocks });
@@ -312,7 +364,13 @@ function CustomTemplateBuilder({
   function addBlock(kind: CustomBlockKind) {
     setBlocks([
       ...draft.blocks,
-      { id: newBlockId(), kind, title: "", note: kind === "text" ? "" : undefined },
+      {
+        id: newBlockId(),
+        kind,
+        title: "",
+        note: kind === "text" ? "" : undefined,
+        queries: kind === "ai-summary" ? [] : undefined,
+      },
     ]);
   }
   function updateBlock(index: number, block: CustomBlock) {
@@ -416,6 +474,19 @@ function CustomTemplateBuilder({
                     className={`${inputClass} text-sm`}
                   />
                 )}
+                {block.kind === "ai-summary" && (
+                  <>
+                    <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                      Which columns to share, and the prompt, are set per report — once this design is
+                      saved, they show up in the field mapping step below.
+                    </p>
+                    <AISummaryQueriesEditor
+                      schema={schema}
+                      queries={block.queries ?? []}
+                      onChange={(queries) => updateBlock(index, { ...block, queries })}
+                    />
+                  </>
+                )}
               </li>
             ))}
           </ol>
@@ -461,6 +532,152 @@ function AddBlockControl({ onAdd }: { onAdd: (kind: CustomBlockKind) => void }) 
       <button type="button" onClick={() => onAdd(kind)} className={smallButtonClass}>
         Add block
       </button>
+    </div>
+  );
+}
+
+// AISummaryQueriesEditor manages an ai-summary block's additional queries:
+// each names a table from the report's own data source and the columns to
+// pull from it. Their results are never shown in the document — only sent to
+// the model as extra context alongside whatever the block's prompt slot
+// selects from the report's own query. Kept intentionally simple (no filters,
+// no aggregates): the block's job is context, not another table to print.
+function AISummaryQueriesEditor({
+  schema,
+  queries,
+  onChange,
+}: {
+  schema: DataSourceSchema | null;
+  queries: AISummaryQuery[];
+  onChange: (queries: AISummaryQuery[]) => void;
+}) {
+  const tables = schema?.type === "google_sheets" ? [] : schema?.tables?.map((t) => t.name) ?? [];
+
+  function update(index: number, query: AISummaryQuery) {
+    onChange(queries.map((q, i) => (i === index ? query : q)));
+  }
+  function remove(index: number) {
+    onChange(queries.filter((_, i) => i !== index));
+  }
+  function add() {
+    onChange([...queries, { title: "", spec: { table: tables[0] ?? "", fields: [] } }]);
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <p className="text-xs font-medium">Additional queries (sent to the model, never shown in the report)</p>
+      {queries.map((query, index) => {
+        const table = query.spec.table ?? "";
+        const available = columnsFor(schema, table);
+        const picked = query.spec.fields.map((f) => f.column).filter((c) => c !== "");
+        return (
+          <div key={index} className="flex flex-col gap-2 rounded border border-black/[.1] p-2 dark:border-white/[.15]">
+            <div className="flex items-center gap-2">
+              <input
+                value={query.title}
+                onChange={(e) => update(index, { ...query, title: e.target.value })}
+                placeholder="Query title (e.g. Purchase history)"
+                className={`${inputClass} flex-1 py-1 text-sm`}
+              />
+              <button type="button" onClick={() => remove(index)} className={chipButtonClass}>
+                Remove
+              </button>
+            </div>
+            {schema?.type !== "google_sheets" && (
+              <select
+                value={table}
+                onChange={(e) => update(index, { ...query, spec: { table: e.target.value, fields: [] } })}
+                className={`${inputClass} py-1 text-sm`}
+              >
+                <option value="">Select a table…</option>
+                {tables.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+            )}
+            {available.length > 0 && (
+              <ColumnListControl
+                controlId={`ai-summary-query-${index}`}
+                columns={available}
+                mapped={picked}
+                onChange={(columns) =>
+                  update(index, { ...query, spec: { ...query.spec, fields: columns.map((column) => ({ column })) } })
+                }
+              />
+            )}
+          </div>
+        );
+      })}
+      <div>
+        <button type="button" onClick={add} className={smallButtonClass}>
+          Add query
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// AISummaryTestButton is the "Probar resumen" control: it calls the model
+// once, on demand, with the block's currently configured columns, prompt and
+// additional queries — the only place a model runs before a report is saved.
+function AISummaryTestButton({
+  blockId,
+  block,
+  config,
+  token,
+  dataSourceId,
+  querySpec,
+}: {
+  blockId: string;
+  block: CustomBlock | undefined;
+  config: TemplateConfig;
+  token: string;
+  dataSourceId: string;
+  querySpec: QuerySpec;
+}) {
+  const [result, setResult] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  const columns = config.columns?.[`${blockId}:columns`] ?? [];
+  const prompt = config.text?.[`${blockId}:prompt`] ?? "";
+
+  async function run() {
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    try {
+      const text = await previewAISummary(token, {
+        dataSourceId,
+        querySpec,
+        columns,
+        prompt,
+        queries: block?.queries ?? [],
+      });
+      setResult(text);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to generate the summary");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-2 rounded border border-dashed border-black/[.15] p-2 dark:border-white/[.2]">
+      <div>
+        <button
+          type="button"
+          onClick={run}
+          disabled={loading || prompt.trim() === ""}
+          className={smallButtonClass}
+        >
+          {loading ? "Generating…" : "Probar resumen"}
+        </button>
+      </div>
+      {error && <p className="text-sm text-red-600">{error}</p>}
+      {result && <p className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{result}</p>}
     </div>
   );
 }

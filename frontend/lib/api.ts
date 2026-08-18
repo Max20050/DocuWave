@@ -258,7 +258,7 @@ export type TemplateSlot = {
 
 // A custom template is composed from this small, extensible block catalog.
 // Mirrors backend/internal/template/blocks.go's BlockKind.
-export type CustomBlockKind = "table" | "grouped-table" | "kpi-tiles" | "text";
+export type CustomBlockKind = "table" | "grouped-table" | "kpi-tiles" | "text" | "ai-summary";
 
 export const CUSTOM_BLOCK_KINDS: { value: CustomBlockKind; label: string; description: string }[] = [
   { value: "table", label: "Table", description: "The columns you pick, in order." },
@@ -269,17 +269,34 @@ export const CUSTOM_BLOCK_KINDS: { value: CustomBlockKind; label: string; descri
   },
   { value: "kpi-tiles", label: "KPI tiles", description: "Headline totals for the columns you pick." },
   { value: "text", label: "Text / note", description: "A freeform title and note. No data binding." },
+  {
+    value: "ai-summary",
+    label: "AI summary",
+    description: "Text an AI model writes from a prompt you give it and the data you choose to share.",
+  },
 ];
+
+// AISummaryQuery is one additional query an "ai-summary" block runs purely to
+// gather context for its prompt — never shown in the document, only sent to
+// the model. Mirrors backend/internal/template/blocks.go's AISummaryQuery.
+export type AISummaryQuery = {
+  title: string;
+  spec: QuerySpec;
+};
 
 // CustomBlock is one block in a composed design: its type, its title (which
 // also identifies it among blocks of the same type), and — for a text block —
-// the freeform note it prints. A block's data-bound slots aren't part of the
-// definition: they're mapped per report, the same as any template's slots.
+// the freeform note it prints. A block's data-bound slots (which columns feed
+// it, its ai-summary prompt) aren't part of the definition: they're mapped
+// per report, the same as any template's slots. queries is the one exception,
+// since an ai-summary block's additional queries aren't a data mapping onto
+// the report's own query — they're queries of their own, part of the design.
 export type CustomBlock = {
   id: string;
   kind: CustomBlockKind;
   title: string;
   note?: string;
+  queries?: AISummaryQuery[];
 };
 
 export type ReportTemplate = {
@@ -564,6 +581,31 @@ export async function previewReportTemplate(
   }
   const body = (await response.json()) as { html: string };
   return body.html;
+}
+
+// previewAISummary is the "Probar resumen" call: it runs the report's query
+// (and the block's own additional queries) and asks the model for real,
+// right now — the only place a model is called before a report is saved.
+export async function previewAISummary(
+  token: string,
+  input: {
+    dataSourceId: string;
+    querySpec: QuerySpec;
+    columns: string[];
+    prompt: string;
+    queries: AISummaryQuery[];
+  },
+): Promise<string> {
+  const response = await authFetch("/api/reports/preview-ai-summary", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  const body = (await response.json()) as { text: string };
+  return body.text;
 }
 
 // previewReport compiles the specification on the server and runs it

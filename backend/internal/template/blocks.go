@@ -4,6 +4,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"maps"
+	"strings"
+
+	"github.com/Max20050/docuwave/internal/query"
 )
 
 // BlockKind names a type in the block catalog a custom design is composed
@@ -26,6 +30,12 @@ const (
 	// BlockText is a freeform title/note with no data binding, for separating
 	// parts of a report.
 	BlockText BlockKind = "text"
+	// BlockAISummary prints text an LLM generates from a prompt the user
+	// writes, given the columns of the report's own (already filtered) query
+	// output the user chooses to share, plus whatever additional queries the
+	// block defines against the same data source — run only to feed the model,
+	// never shown in the document themselves.
+	BlockAISummary BlockKind = "ai-summary"
 )
 
 // isKnownBlockKind reports whether kind is in the catalog. It's the one place
@@ -34,7 +44,7 @@ const (
 // and everything upstream of it stay untouched.
 func isKnownBlockKind(kind BlockKind) bool {
 	switch kind {
-	case BlockTable, BlockGrouped, BlockKPI, BlockText:
+	case BlockTable, BlockGrouped, BlockKPI, BlockText, BlockAISummary:
 		return true
 	default:
 		return false
@@ -59,6 +69,20 @@ type BlockDef struct {
 	// Note is the freeform text a "text" block prints. Every other kind
 	// ignores it.
 	Note string `json:"note,omitempty"`
+	// Queries are additional queries an "ai-summary" block runs against the
+	// report's own data source to gather extra context for the model. Their
+	// results are never printed in the document — only the report's own query
+	// output and this block's chosen columns are. Every other kind ignores it.
+	Queries []AISummaryQuery `json:"queries,omitempty"`
+}
+
+// AISummaryQuery is one additional query an "ai-summary" block runs purely to
+// gather context for its prompt. Title labels it for the model (and for the
+// person configuring the block); Spec is compiled and run the same way a
+// report's own query is, against the same data source.
+type AISummaryQuery struct {
+	Title string     `json:"title"`
+	Spec  query.Spec `json:"spec"`
 }
 
 // newBlockID generates a short random identifier for a block that doesn't
@@ -146,11 +170,77 @@ func blockSlots(b BlockDef) []Slot {
 			Required:    true,
 			Numeric:     true,
 		}}
+	case BlockAISummary:
+		return []Slot{
+			{
+				Key:         slotKey(b.ID, "columns"),
+				Label:       blockLabel(b, "Context columns"),
+				Kind:        SlotColumns,
+				Description: "Columns from the report's own (already filtered) query output to share with the model. Nothing else from the query is sent.",
+			},
+			{
+				Key:         slotKey(b.ID, "prompt"),
+				Label:       blockLabel(b, "Prompt"),
+				Kind:        SlotText,
+				Description: "Instructions for the model — what to write about the data above.",
+				Required:    true,
+			},
+		}
 	case BlockText:
 		return nil
 	default:
 		return nil
 	}
+}
+
+// aiSummarySlotKey namespaces the internal slot an ai-summary block's
+// generated text is threaded back through. It's never declared in Meta.Slots
+// — a report's runner fills it in right before rendering, so it never shows
+// up as a control for a user to edit directly.
+func aiSummarySlotKey(blockID string) string { return slotKey(blockID, "summary") }
+
+// AISummaryColumns returns the columns an ai-summary block's config chose to
+// share with the model.
+func AISummaryColumns(b BlockDef, cfg Config) []string {
+	return cfg.ColumnsFor(slotKey(b.ID, "columns"))
+}
+
+// AISummaryPrompt returns the free-text instructions a user wrote for an
+// ai-summary block.
+func AISummaryPrompt(b BlockDef, cfg Config) string {
+	return cfg.TextFor(slotKey(b.ID, "prompt"))
+}
+
+// WithAISummaryText returns a copy of cfg with an ai-summary block's
+// generated text (or, on failure, an inline error message) set for Document
+// and Render to print. It's how a report's runner threads a result computed
+// outside this package — calling a model, running extra queries — back into
+// the same Config a template renders with, without Document or Render ever
+// needing to know a network call happened.
+func WithAISummaryText(cfg Config, b BlockDef, text string) Config {
+	out := cfg
+	texts := make(map[string]string, len(cfg.Text)+1)
+	maps.Copy(texts, cfg.Text)
+	texts[aiSummarySlotKey(b.ID)] = text
+	out.Text = texts
+	return out
+}
+
+// AISummaryBlocks returns a template's ai-summary blocks, in order. Only a
+// block-composed template (CustomTemplate) ever has any — a starter template
+// always returns nil.
+func AISummaryBlocks(t Template) []BlockDef {
+	custom, ok := t.(CustomTemplate)
+	if !ok {
+		return nil
+	}
+	var blocks []BlockDef
+	for _, b := range custom.Blocks {
+		if b.Kind == BlockAISummary {
+			blocks = append(blocks, b)
+		}
+	}
+	return blocks
 }
 
 // Unmapped-slot notes for a composed block, printed in place of its content
@@ -203,9 +293,28 @@ func blockDoc(b BlockDef, data Data, cfg Config) Block {
 		return kpiBlockDoc(b, data, cfg)
 	case BlockText:
 		return Block{Title: b.Title, Note: b.Note}
+	case BlockAISummary:
+		return aiSummaryBlockDoc(b, cfg)
 	default:
 		return Block{Title: b.Title, Note: fmt.Sprintf("Unknown block type %q.", b.Kind)}
 	}
+}
+
+// blockAISummaryUnmappedNote is what an ai-summary block prints when nothing
+// has generated its text yet — a report preview (which never calls the
+// model) and a saved-but-not-yet-run report both look like this.
+const blockAISummaryUnmappedNote = "This summary has not been generated yet."
+
+// aiSummaryBlockDoc prints whatever text a report's runner already generated
+// and threaded into cfg via WithAISummaryText. This package never calls a
+// model itself — Data and Config are both plain, already-fetched values, and
+// nothing here has a network client or a user's provider credentials.
+func aiSummaryBlockDoc(b BlockDef, cfg Config) Block {
+	text := strings.TrimSpace(cfg.TextFor(aiSummarySlotKey(b.ID)))
+	if text == "" {
+		return Block{Title: b.Title, Note: blockAISummaryUnmappedNote}
+	}
+	return Block{Title: b.Title, Note: text}
 }
 
 func tableBlockDoc(b BlockDef, data Data, cfg Config) Block {

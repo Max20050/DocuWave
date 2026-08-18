@@ -102,6 +102,13 @@ func main() {
 	}
 	llmStore := llm.NewStore(pool)
 	llmHandlers := llm.NewHandlers(llmStore, llmEncryptor)
+	// llmGenerator is also what a report's ai-summary blocks call, alongside
+	// the natural-language-query path this was originally built for.
+	llmGenerator := llm.NewGenerator(llmStore, llmEncryptor)
+	// aiSummaryEnabled gates every ai-summary affordance off by default: the
+	// product isn't meant to ship this to anyone until a cost estimator
+	// exists to show what adding a block costs before they add it.
+	aiSummaryEnabled := os.Getenv("AI_SUMMARY_ENABLED") == "true"
 
 	reportStore := report.NewStore(pool)
 	registry := template.NewRegistry(template.Starters()...)
@@ -114,8 +121,9 @@ func main() {
 	templates := template.NewCompositeSource(registry, customTemplates, templateArchive)
 	// The runner is the whole report pipeline — query, template, files — and is
 	// what scheduled and on-demand delivery will run as well.
-	reportRunner := report.NewRunner(resolver, schemas, templates)
-	reportHandlers := report.NewHandlers(reportStore, reportRunner, templates, customTemplates, templateArchive)
+	reportRunner := report.NewRunner(resolver, schemas, templates, llmGenerator)
+	reportHandlers := report.NewHandlers(
+		reportStore, reportRunner, templates, customTemplates, templateArchive, llmGenerator, aiSummaryEnabled)
 
 	recipientStore := recipient.NewStore(pool)
 	recipientGroups := recipient.NewGroupStore(pool)
@@ -154,6 +162,7 @@ func main() {
 	mux.HandleFunc("POST /api/report-templates/{id}/restore", authHandlers.RequireAuth(reportHandlers.RestoreTemplate))
 	mux.HandleFunc("POST /api/reports/preview", authHandlers.RequireAuth(reportHandlers.Preview))
 	mux.HandleFunc("POST /api/reports/preview-template", authHandlers.RequireAuth(reportHandlers.PreviewTemplate))
+	mux.HandleFunc("POST /api/reports/preview-ai-summary", authHandlers.RequireAuth(reportHandlers.PreviewAISummary))
 	mux.HandleFunc("GET /api/reports", authHandlers.RequireAuth(reportHandlers.List))
 	mux.HandleFunc("POST /api/reports", authHandlers.RequireAuth(reportHandlers.Create))
 	mux.HandleFunc("GET /api/reports/{id}/download", authHandlers.RequireAuth(reportHandlers.Download))

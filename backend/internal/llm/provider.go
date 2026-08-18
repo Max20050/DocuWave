@@ -18,6 +18,9 @@ import (
 // provider never requires changing store/handler logic.
 type Provider interface {
 	GenerateQuery(ctx context.Context, schema string, prompt string) (string, error)
+	// GenerateText answers a single prompt with free text — no schema framing,
+	// no query-shaped expectations. It's what a report's ai-summary blocks call.
+	GenerateText(ctx context.Context, prompt string) (string, error)
 }
 
 type providerFactory func(apiKey string) Provider

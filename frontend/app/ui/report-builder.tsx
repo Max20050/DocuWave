@@ -5,11 +5,16 @@ import {
   AGGREGATES,
   OPERATORS,
   REPORT_FORMATS,
+  archiveReportTemplate,
+  createCustomTemplate,
   emptyQuerySpec,
   getDataSourceSchema,
+  listArchivedReportTemplates,
   listReportTemplates,
   previewReport,
   previewReportTemplate,
+  restoreReportTemplate,
+  updateCustomTemplate,
   type Aggregate,
   type DataSource,
   type DataSourceSchema,
@@ -31,6 +36,7 @@ import {
   TemplatePicker,
   defaultTemplateConfig,
   numericColumns,
+  type CustomTemplateDraft,
 } from "@/app/ui/template-picker";
 
 const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";
@@ -469,9 +475,14 @@ export function ReportBuilder({
   const [formats, setFormats] = useState<ReportFormat[]>(["pdf"]);
 
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
+  const [archivedTemplates, setArchivedTemplates] = useState<ReportTemplate[]>([]);
   const [templateId, setTemplateId] = useState("");
   const [templateConfig, setTemplateConfig] = useState<TemplateConfig>({});
   const [layout, setLayout] = useState<string | null>(null);
+  // customDraft holds the block composition the user is building or
+  // reworking; it's null the rest of the time, when the picker shows the
+  // normal template list and field mapping.
+  const [customDraft, setCustomDraft] = useState<CustomTemplateDraft | null>(null);
 
   const [templatesError, setTemplatesError] = useState<string | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
@@ -482,9 +493,24 @@ export function ReportBuilder({
   const [rendering, setRendering] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // loadTemplates reloads both listings — the picker's default cards and its
+  // "Show archived" section — so a save, archive, or restore is reflected
+  // immediately without a page refresh.
+  async function loadTemplates() {
+    const [active, archived] = await Promise.all([
+      listReportTemplates(token),
+      listArchivedReportTemplates(token),
+    ]);
+    setTemplates(active);
+    setArchivedTemplates(archived);
+  }
+
   useEffect(() => {
-    listReportTemplates(token)
-      .then(setTemplates)
+    Promise.all([listReportTemplates(token), listArchivedReportTemplates(token)])
+      .then(([active, archived]) => {
+        setTemplates(active);
+        setArchivedTemplates(archived);
+      })
       .catch((err) => setTemplatesError(errorMessage(err, "Failed to load report templates")));
   }, [token]);
 
@@ -519,6 +545,7 @@ export function ReportBuilder({
     );
     setLayout(null);
     setLayoutError(null);
+    setCustomDraft(null);
   }
 
   function resetTemplateState() {
@@ -526,6 +553,80 @@ export function ReportBuilder({
     setTemplateConfig({});
     setLayout(null);
     setLayoutError(null);
+    setCustomDraft(null);
+  }
+
+  function openNewCustomTemplate() {
+    setCustomDraft({ editingId: null, name: "", description: "", blocks: [], saving: false, error: null });
+  }
+
+  function openEditCustomTemplate(template: ReportTemplate) {
+    setCustomDraft({
+      editingId: template.id,
+      name: template.name,
+      description: template.description,
+      blocks: template.blocks ?? [],
+      saving: false,
+      error: null,
+    });
+  }
+
+  // saveCustomTemplate persists the design being built or reworked, then hands
+  // off to the same slot-mapping flow every template goes through — saving
+  // returns the design's declared slots, so nothing template-specific is
+  // needed to pick those up.
+  async function saveCustomTemplate() {
+    if (!customDraft) return;
+    setCustomDraft({ ...customDraft, saving: true, error: null });
+    try {
+      const input = { name: customDraft.name, description: customDraft.description, blocks: customDraft.blocks };
+      const saved = customDraft.editingId === null
+        ? await createCustomTemplate(token, input)
+        : await updateCustomTemplate(token, customDraft.editingId, input);
+
+      await loadTemplates();
+      setCustomDraft(null);
+      // Built directly from the save response rather than through
+      // applyTemplate: the just-awaited loadTemplates() hasn't re-rendered
+      // this closure's `templates` yet, so looking the new template up there
+      // would still miss it.
+      const previewColumns = preview?.columns ?? [];
+      const previewRows = preview?.rows ?? [];
+      setTemplateId(saved.id);
+      setTemplateConfig(
+        defaultTemplateConfig(
+          { id: saved.id, name: saved.name, description: saved.description, slots: saved.slots, owned: true, archived: false },
+          previewColumns,
+          numericColumns(previewColumns, previewRows),
+          name,
+        ),
+      );
+      setLayout(null);
+      setLayoutError(null);
+    } catch (err) {
+      setCustomDraft({ ...customDraft, saving: false, error: errorMessage(err, "Failed to save the design") });
+    }
+  }
+
+  async function handleArchive(id: string) {
+    setTemplatesError(null);
+    try {
+      await archiveReportTemplate(token, id);
+      if (id === templateId) resetTemplateState();
+      await loadTemplates();
+    } catch (err) {
+      setTemplatesError(errorMessage(err, "Failed to archive the template"));
+    }
+  }
+
+  async function handleRestore(id: string) {
+    setTemplatesError(null);
+    try {
+      await restoreReportTemplate(token, id);
+      await loadTemplates();
+    } catch (err) {
+      setTemplatesError(errorMessage(err, "Failed to restore the template"));
+    }
   }
 
   // A specification built against one source means nothing against another.
@@ -720,12 +821,21 @@ export function ReportBuilder({
             <div className="flex flex-col gap-4 border-t border-black/[.1] pt-4 dark:border-white/[.15]">
               <TemplatePicker
                 templates={templates}
+                archivedTemplates={archivedTemplates}
                 columns={preview.columns}
                 rows={preview.rows}
                 templateId={templateId}
                 config={templateConfig}
                 onSelect={(id) => applyTemplate(id, preview.columns, preview.rows)}
                 onConfigChange={setTemplateConfig}
+                customDraft={customDraft}
+                onOpenNewCustomTemplate={openNewCustomTemplate}
+                onOpenEditCustomTemplate={openEditCustomTemplate}
+                onCustomDraftChange={setCustomDraft}
+                onSaveCustomTemplate={saveCustomTemplate}
+                onCancelCustomTemplate={() => setCustomDraft(null)}
+                onArchive={handleArchive}
+                onRestore={handleRestore}
               />
 
               <div>

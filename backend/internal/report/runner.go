@@ -37,13 +37,13 @@ var ErrQueryFailed = errors.New("the data source could not answer this report's 
 type Runner struct {
 	resolver  *datasource.Resolver
 	schemas   *datasource.SchemaProvider
-	templates *template.Registry
+	templates template.Source
 }
 
 func NewRunner(
 	resolver *datasource.Resolver,
 	schemas *datasource.SchemaProvider,
-	templates *template.Registry,
+	templates template.Source,
 ) *Runner {
 	return &Runner{resolver: resolver, schemas: schemas, templates: templates}
 }
@@ -128,7 +128,7 @@ func (r *Runner) Document(ctx context.Context, rep Report) (template.Doc, error)
 		return template.Doc{}, fmt.Errorf("%w: %v", ErrQueryFailed, err)
 	}
 
-	doc, err := r.templates.Document(rep.TemplateID, template.Data{
+	doc, err := template.DocumentWith(ctx, r.templates, rep.UserID, rep.TemplateID, template.Data{
 		Columns:     result.Columns,
 		Rows:        result.Rows,
 		GeneratedAt: time.Now(),

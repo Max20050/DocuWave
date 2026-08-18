@@ -256,11 +256,66 @@ export type TemplateSlot = {
   numeric: boolean;
 };
 
+// A custom template is composed from this small, extensible block catalog.
+// Mirrors backend/internal/template/blocks.go's BlockKind.
+export type CustomBlockKind = "table" | "grouped-table" | "kpi-tiles" | "text";
+
+export const CUSTOM_BLOCK_KINDS: { value: CustomBlockKind; label: string; description: string }[] = [
+  { value: "table", label: "Table", description: "The columns you pick, in order." },
+  {
+    value: "grouped-table",
+    label: "Grouped table",
+    description: "One row per group, with the columns you pick totalled.",
+  },
+  { value: "kpi-tiles", label: "KPI tiles", description: "Headline totals for the columns you pick." },
+  { value: "text", label: "Text / note", description: "A freeform title and note. No data binding." },
+];
+
+// CustomBlock is one block in a composed design: its type, its title (which
+// also identifies it among blocks of the same type), and — for a text block —
+// the freeform note it prints. A block's data-bound slots aren't part of the
+// definition: they're mapped per report, the same as any template's slots.
+export type CustomBlock = {
+  id: string;
+  kind: CustomBlockKind;
+  title: string;
+  note?: string;
+};
+
 export type ReportTemplate = {
   id: string;
   name: string;
   description: string;
   slots: TemplateSlot[];
+  // owned marks a template as one of the current user's own custom designs —
+  // the picker shows these with a "Mine" badge.
+  owned: boolean;
+  // archived is only ever true in the archived-templates listing; the default
+  // listing never includes what a user has archived.
+  archived: boolean;
+  // blocks is only present for a template that's owned: it's what a "Rework
+  // this design" editor needs to reopen it. Built-ins and other users'
+  // templates never carry it.
+  blocks?: CustomBlock[];
+};
+
+export type CustomTemplateInput = {
+  name: string;
+  description: string;
+  blocks: CustomBlock[];
+};
+
+// CustomTemplate is the full response from saving a custom template: the
+// design as stored, plus the slots it now declares — the same slot shape any
+// template exposes, ready to drive the existing mapping UI immediately.
+export type CustomTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  blocks: CustomBlock[];
+  slots: TemplateSlot[];
+  createdAt: string;
+  updatedAt: string;
 };
 
 // TemplateConfig is the user's slot mapping, keyed by slot. It is saved with the
@@ -422,6 +477,70 @@ export async function listReportTemplates(token: string): Promise<ReportTemplate
     throw new ApiError(response.status, await parseErrorMessage(response));
   }
   return response.json();
+}
+
+// listArchivedReportTemplates returns the templates — built-in or custom —
+// this user has archived, for the picker's "Show archived" section.
+export async function listArchivedReportTemplates(token: string): Promise<ReportTemplate[]> {
+  const response = await authFetch("/api/report-templates/archived", token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+// createCustomTemplate saves a block composition as a named, reusable
+// template, which then shows up in the picker like any other.
+export async function createCustomTemplate(
+  token: string,
+  input: CustomTemplateInput,
+): Promise<CustomTemplate> {
+  const response = await authFetch("/api/report-templates", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+// updateCustomTemplate reworks a saved custom template's blocks. It's a live
+// reference: every report already using it renders through the new design
+// going forward.
+export async function updateCustomTemplate(
+  token: string,
+  id: string,
+  input: CustomTemplateInput,
+): Promise<CustomTemplate> {
+  const response = await authFetch(`/api/report-templates/${id}`, token, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+// archiveReportTemplate hides a template (built-in or custom) from this
+// user's default picker listing, without affecting any other account or any
+// report that already references it.
+export async function archiveReportTemplate(token: string, id: string): Promise<void> {
+  const response = await authFetch(`/api/report-templates/${id}/archive`, token, { method: "POST" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}
+
+// restoreReportTemplate un-archives a template for this user.
+export async function restoreReportTemplate(token: string, id: string): Promise<void> {
+  const response = await authFetch(`/api/report-templates/${id}/restore`, token, { method: "POST" });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
 }
 
 // previewReportTemplate renders the template on the server with the rows the

@@ -20,19 +20,24 @@ import (
 )
 
 func TestHandlersRequireAuthentication(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil)
+	handlers := NewHandlers(nil, nil, nil, nil, nil)
 
 	cases := map[string]struct {
 		handler http.HandlerFunc
 		request *http.Request
 	}{
-		"preview":          {handlers.Preview, httptest.NewRequest(http.MethodPost, "/api/reports/preview", nil)},
-		"list templates":   {handlers.ListTemplates, httptest.NewRequest(http.MethodGet, "/api/report-templates", nil)},
-		"preview template": {handlers.PreviewTemplate, httptest.NewRequest(http.MethodPost, "/api/reports/preview-template", nil)},
-		"create":           {handlers.Create, httptest.NewRequest(http.MethodPost, "/api/reports", nil)},
-		"list":             {handlers.List, httptest.NewRequest(http.MethodGet, "/api/reports", nil)},
-		"download":         {handlers.Download, httptest.NewRequest(http.MethodGet, "/api/reports/r-1/download", nil)},
-		"delete":           {handlers.Delete, httptest.NewRequest(http.MethodDelete, "/api/reports/r-1", nil)},
+		"preview":                 {handlers.Preview, httptest.NewRequest(http.MethodPost, "/api/reports/preview", nil)},
+		"list templates":          {handlers.ListTemplates, httptest.NewRequest(http.MethodGet, "/api/report-templates", nil)},
+		"list archived templates": {handlers.ListArchivedTemplates, httptest.NewRequest(http.MethodGet, "/api/report-templates/archived", nil)},
+		"create custom template":  {handlers.CreateCustomTemplate, httptest.NewRequest(http.MethodPost, "/api/report-templates", nil)},
+		"update custom template":  {handlers.UpdateCustomTemplate, httptest.NewRequest(http.MethodPut, "/api/report-templates/c-1", nil)},
+		"archive template":        {handlers.ArchiveTemplate, httptest.NewRequest(http.MethodPost, "/api/report-templates/tabular/archive", nil)},
+		"restore template":        {handlers.RestoreTemplate, httptest.NewRequest(http.MethodPost, "/api/report-templates/tabular/restore", nil)},
+		"preview template":        {handlers.PreviewTemplate, httptest.NewRequest(http.MethodPost, "/api/reports/preview-template", nil)},
+		"create":                  {handlers.Create, httptest.NewRequest(http.MethodPost, "/api/reports", nil)},
+		"list":                    {handlers.List, httptest.NewRequest(http.MethodGet, "/api/reports", nil)},
+		"download":                {handlers.Download, httptest.NewRequest(http.MethodGet, "/api/reports/r-1/download", nil)},
+		"delete":                  {handlers.Delete, httptest.NewRequest(http.MethodDelete, "/api/reports/r-1", nil)},
 	}
 
 	for name, tc := range cases {
@@ -184,7 +189,7 @@ func TestWriteTemplateError(t *testing.T) {
 // The UI builds its template picker and its field mapping controls from this
 // response, so it has to carry every slot.
 func TestListTemplates(t *testing.T) {
-	handlers := NewHandlers(nil, nil, template.NewRegistry(template.Starters()...))
+	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil)
 
 	recorder := httptest.NewRecorder()
 	handlers.ListTemplates(recorder, authenticatedRequest(t, http.MethodGet, "/api/report-templates", nil))
@@ -207,10 +212,84 @@ func TestListTemplates(t *testing.T) {
 	}
 }
 
+// A custom template needs a name — the same rule reports themselves already
+// follow — checked before it ever reaches the store.
+func TestCreateCustomTemplateRequiresAName(t *testing.T) {
+	handlers := NewHandlers(nil, nil, nil, nil, nil)
+
+	body, err := json.Marshal(customTemplateRequest{Description: "no name"})
+	if err != nil {
+		t.Fatalf("marshal returned error: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	handlers.CreateCustomTemplate(recorder,
+		authenticatedRequest(t, http.MethodPost, "/api/report-templates", bytes.NewReader(body)))
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(recorder.Body.String(), "name") {
+		t.Errorf("body %q does not name the missing field", recorder.Body.String())
+	}
+}
+
+// A block naming a kind outside the catalog is rejected before it's saved,
+// for both creating and updating a custom template.
+func TestCustomTemplateRejectsUnknownBlockKind(t *testing.T) {
+	handlers := NewHandlers(nil, nil, nil, nil, nil)
+	req := customTemplateRequest{
+		Name:   "Bad design",
+		Blocks: []template.BlockDef{{Kind: "chart", Title: "Nope"}},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal returned error: %v", err)
+	}
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"create": handlers.CreateCustomTemplate,
+		"update": handlers.UpdateCustomTemplate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			request := authenticatedRequest(t, http.MethodPost, "/api/report-templates", bytes.NewReader(body))
+			request.SetPathValue("id", "c-1")
+			handler(recorder, request)
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("got status %d, want %d", recorder.Code, http.StatusBadRequest)
+			}
+			if !strings.Contains(recorder.Body.String(), "chart") {
+				t.Errorf("body %q does not name the offending block kind", recorder.Body.String())
+			}
+		})
+	}
+}
+
+// Archiving and restoring both need the ID in the path.
+func TestArchiveAndRestoreTemplateRequireAnID(t *testing.T) {
+	handlers := NewHandlers(nil, nil, nil, nil, nil)
+
+	for name, handler := range map[string]http.HandlerFunc{
+		"archive": handlers.ArchiveTemplate,
+		"restore": handlers.RestoreTemplate,
+	} {
+		t.Run(name, func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			handler(recorder, authenticatedRequest(t, http.MethodPost, "/api/report-templates//archive", nil))
+
+			if recorder.Code != http.StatusBadRequest {
+				t.Fatalf("got status %d, want %d", recorder.Code, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 // The request is checked before the query runs, so a half-filled preview never
 // reaches the user's data source.
 func TestPreviewTemplateRejectsIncompleteRequests(t *testing.T) {
-	handlers := NewHandlers(nil, nil, template.NewRegistry(template.Starters()...))
+	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil)
 
 	spec := query.Spec{Table: "sales", Fields: []query.Field{{Column: "region"}}}
 	tests := map[string]previewTemplateRequest{
@@ -412,7 +491,7 @@ func TestWriteRenderError(t *testing.T) {
 // The report has to be loaded before anything runs, so a download of one that
 // isn't there never reaches the user's data source.
 func TestDownloadRequiresAnID(t *testing.T) {
-	handlers := NewHandlers(nil, nil, template.NewRegistry(template.Starters()...))
+	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil)
 
 	recorder := httptest.NewRecorder()
 	handlers.Download(recorder, authenticatedRequest(t, http.MethodGet, "/api/reports//download", nil))

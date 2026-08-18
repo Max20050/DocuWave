@@ -104,11 +104,18 @@ func main() {
 	llmHandlers := llm.NewHandlers(llmStore, llmEncryptor)
 
 	reportStore := report.NewStore(pool)
-	templates := template.NewRegistry(template.Starters()...)
+	registry := template.NewRegistry(template.Starters()...)
+	customTemplates := template.NewCustomStore(pool)
+	templateArchive := template.NewArchiveStore(pool)
+	// The composite source is the seam a per-user template — built in or
+	// custom — plugs into: it merges the built-in starters with a user's own
+	// saved designs, honoring what they've archived, into the one Source the
+	// report pipeline depends on.
+	templates := template.NewCompositeSource(registry, customTemplates, templateArchive)
 	// The runner is the whole report pipeline — query, template, files — and is
 	// what scheduled and on-demand delivery will run as well.
 	reportRunner := report.NewRunner(resolver, schemas, templates)
-	reportHandlers := report.NewHandlers(reportStore, reportRunner, templates)
+	reportHandlers := report.NewHandlers(reportStore, reportRunner, templates, customTemplates, templateArchive)
 
 	recipientStore := recipient.NewStore(pool)
 	recipientGroups := recipient.NewGroupStore(pool)
@@ -140,6 +147,11 @@ func main() {
 	mux.HandleFunc("PUT /api/llm-config", authHandlers.RequireAuth(llmHandlers.Save))
 	mux.HandleFunc("DELETE /api/llm-config", authHandlers.RequireAuth(llmHandlers.Delete))
 	mux.HandleFunc("GET /api/report-templates", authHandlers.RequireAuth(reportHandlers.ListTemplates))
+	mux.HandleFunc("GET /api/report-templates/archived", authHandlers.RequireAuth(reportHandlers.ListArchivedTemplates))
+	mux.HandleFunc("POST /api/report-templates", authHandlers.RequireAuth(reportHandlers.CreateCustomTemplate))
+	mux.HandleFunc("PUT /api/report-templates/{id}", authHandlers.RequireAuth(reportHandlers.UpdateCustomTemplate))
+	mux.HandleFunc("POST /api/report-templates/{id}/archive", authHandlers.RequireAuth(reportHandlers.ArchiveTemplate))
+	mux.HandleFunc("POST /api/report-templates/{id}/restore", authHandlers.RequireAuth(reportHandlers.RestoreTemplate))
 	mux.HandleFunc("POST /api/reports/preview", authHandlers.RequireAuth(reportHandlers.Preview))
 	mux.HandleFunc("POST /api/reports/preview-template", authHandlers.RequireAuth(reportHandlers.PreviewTemplate))
 	mux.HandleFunc("GET /api/reports", authHandlers.RequireAuth(reportHandlers.List))

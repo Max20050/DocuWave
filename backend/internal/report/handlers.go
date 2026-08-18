@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"time"
 
@@ -26,11 +27,22 @@ import (
 type Handlers struct {
 	store     *Store
 	runner    *Runner
-	templates *template.Registry
+	templates template.Source
+	// custom and archive back the template picker's "Build my own design" and
+	// "Show archived" affordances. They're nil in tests that only exercise the
+	// report and starter-template paths, which never reach them.
+	custom  *template.CustomStore
+	archive *template.ArchiveStore
 }
 
-func NewHandlers(store *Store, runner *Runner, templates *template.Registry) *Handlers {
-	return &Handlers{store: store, runner: runner, templates: templates}
+func NewHandlers(
+	store *Store,
+	runner *Runner,
+	templates template.Source,
+	custom *template.CustomStore,
+	archive *template.ArchiveStore,
+) *Handlers {
+	return &Handlers{store: store, runner: runner, templates: templates, custom: custom, archive: archive}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -136,15 +148,279 @@ func writeRenderError(w http.ResponseWriter, err error) {
 	}
 }
 
-// ListTemplates handles GET /api/report-templates: the templates a report can be
-// rendered through, each with the slots the user maps their query output onto.
+// templateResponse is a template's Meta plus the two things Meta itself
+// doesn't carry because they're facts about the requesting user, not the
+// template: whether it's one of theirs, and whether they've archived it.
+type templateResponse struct {
+	template.Meta
+	Owned    bool `json:"owned"`
+	Archived bool `json:"archived"`
+	// Blocks is only set for a template this user owns — what a "rework this
+	// design" editor needs to reopen it. Built-ins and other users' custom
+	// templates never carry it.
+	Blocks []template.BlockDef `json:"blocks,omitempty"`
+}
+
+// withBlocks fills in a custom template's own blocks when the response is for
+// a template this user owns, so the picker can reopen it for editing without
+// a second endpoint.
+func (h *Handlers) withBlocks(ctx context.Context, userID string, resp templateResponse) templateResponse {
+	if !resp.Owned || h.custom == nil {
+		return resp
+	}
+	if custom, err := h.custom.Get(ctx, userID, resp.ID); err == nil {
+		resp.Blocks = custom.Blocks
+	}
+	return resp
+}
+
+// ownedIDs returns the set of template IDs that are the given user's own
+// custom templates, for marking cards "Mine" in the picker.
+func (h *Handlers) ownedIDs(ctx context.Context, userID string) (map[string]bool, error) {
+	if h.custom == nil {
+		return map[string]bool{}, nil
+	}
+	customs, err := h.custom.List(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	owned := make(map[string]bool, len(customs))
+	for _, c := range customs {
+		owned[c.ID] = true
+	}
+	return owned, nil
+}
+
+// ListTemplates handles GET /api/report-templates: the templates a report can
+// be rendered through — every built-in plus the user's own custom templates,
+// minus whichever either they've archived — each with the slots the user maps
+// their query output onto.
 func (h *Handlers) ListTemplates(w http.ResponseWriter, r *http.Request) {
-	if _, ok := auth.UserIDFromContext(r.Context()); !ok {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
 		writeError(w, http.StatusUnauthorized, "authentication required")
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.templates.List())
+	metas, err := h.templates.List(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list templates")
+		return
+	}
+	owned, err := h.ownedIDs(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list templates")
+		return
+	}
+
+	resp := make([]templateResponse, 0, len(metas))
+	for _, meta := range metas {
+		resp = append(resp, h.withBlocks(r.Context(), userID, templateResponse{Meta: meta, Owned: owned[meta.ID]}))
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ListArchivedTemplates handles GET /api/report-templates/archived: the
+// templates — built-in or custom — this user has archived, for the picker's
+// collapsible "Show archived" section and its restore action.
+func (h *Handlers) ListArchivedTemplates(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if h.archive == nil {
+		writeJSON(w, http.StatusOK, []templateResponse{})
+		return
+	}
+
+	archived, err := h.archive.Archived(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list archived templates")
+		return
+	}
+	owned, err := h.ownedIDs(r.Context(), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list archived templates")
+		return
+	}
+
+	resp := make([]templateResponse, 0, len(archived))
+	for id := range archived {
+		t, err := h.templates.Get(r.Context(), userID, id)
+		if err != nil {
+			// The template itself is gone (a custom template deleted outright,
+			// which this scope doesn't otherwise do) — nothing to restore into,
+			// so it's dropped from the list rather than surfaced as an error.
+			continue
+		}
+		resp = append(resp,
+			h.withBlocks(r.Context(), userID, templateResponse{Meta: t.Meta(), Owned: owned[id], Archived: true}))
+	}
+	sort.Slice(resp, func(i, j int) bool { return resp[i].Name < resp[j].Name })
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// ArchiveTemplate handles POST /api/report-templates/{id}/archive: hides a
+// template — built-in or custom — from this user's picker without affecting
+// any other account or any report that already references it.
+func (h *Handlers) ArchiveTemplate(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	if _, err := h.templates.Get(r.Context(), userID, id); err != nil {
+		writeTemplateError(w, err)
+		return
+	}
+	if err := h.archive.Archive(r.Context(), userID, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to archive template")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// RestoreTemplate handles POST /api/report-templates/{id}/restore: un-archives
+// a template for this user.
+func (h *Handlers) RestoreTemplate(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	if err := h.archive.Restore(r.Context(), userID, id); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to restore template")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+type customTemplateRequest struct {
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Blocks      []template.BlockDef `json:"blocks"`
+}
+
+type customTemplateResponse struct {
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Description string              `json:"description"`
+	Blocks      []template.BlockDef `json:"blocks"`
+	// Slots is the same slot list the template's Meta declares, included here
+	// so the builder can show the mapping controls its own blocks will need
+	// without a second round trip.
+	Slots     []template.Slot `json:"slots"`
+	CreatedAt string          `json:"createdAt"`
+	UpdatedAt string          `json:"updatedAt"`
+}
+
+func toCustomTemplateResponse(t template.SavedCustomTemplate) customTemplateResponse {
+	return customTemplateResponse{
+		ID:          t.ID,
+		Name:        t.Name,
+		Description: t.Description,
+		Blocks:      t.Blocks,
+		Slots:       t.Meta().Slots,
+		CreatedAt:   t.CreatedAt.Format(time.RFC3339),
+		UpdatedAt:   t.UpdatedAt.Format(time.RFC3339),
+	}
+}
+
+// CreateCustomTemplate handles POST /api/report-templates: saves a block
+// composition the user built inside a report as a named, reusable template.
+func (h *Handlers) CreateCustomTemplate(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+
+	var req customTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	blocks, err := template.PrepareBlocks(req.Blocks)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	created, err := h.custom.Create(r.Context(), userID, template.CustomTemplate{
+		Name:        req.Name,
+		Description: req.Description,
+		Blocks:      blocks,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save template")
+		return
+	}
+	writeJSON(w, http.StatusCreated, toCustomTemplateResponse(created))
+}
+
+// UpdateCustomTemplate handles PUT /api/report-templates/{id}: reworks a saved
+// custom template's blocks. Because a template is a live reference, this
+// changes every report that already uses it, going forward.
+func (h *Handlers) UpdateCustomTemplate(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "id is required")
+		return
+	}
+
+	var req customTemplateRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+
+	blocks, err := template.PrepareBlocks(req.Blocks)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	updated, err := h.custom.Update(r.Context(), userID, id, template.CustomTemplate{
+		Name:        req.Name,
+		Description: req.Description,
+		Blocks:      blocks,
+	})
+	if err != nil {
+		if errors.Is(err, template.ErrUnknownTemplate) {
+			writeError(w, http.StatusNotFound, "template not found")
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to save template")
+		return
+	}
+	writeJSON(w, http.StatusOK, toCustomTemplateResponse(updated))
 }
 
 type previewRequest struct {
@@ -265,7 +541,7 @@ func (h *Handlers) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	html, err := h.templates.Render(req.TemplateID, template.Data{
+	html, err := template.RenderWith(r.Context(), h.templates, userID, req.TemplateID, template.Data{
 		Columns:     result.Columns,
 		Rows:        result.Rows,
 		GeneratedAt: time.Now(),
@@ -330,7 +606,7 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	// The mapping is checked against the template's slots, but not against the
 	// query's columns: that would mean running the query to save a report.
 	// Rendering re-checks it against the rows it actually gets.
-	if err := h.templates.ValidateConfig(req.TemplateID, req.TemplateConfig); err != nil {
+	if err := template.ValidateConfigWith(r.Context(), h.templates, userID, req.TemplateID, req.TemplateConfig); err != nil {
 		writeTemplateError(w, err)
 		return
 	}

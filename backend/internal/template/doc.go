@@ -55,6 +55,15 @@ type TableColumn struct {
 	Numeric bool
 }
 
+// Class is the alignment class an HTML render should use for this column's
+// header and cells.
+func (c TableColumn) Class() string {
+	if c.Numeric {
+		return "num"
+	}
+	return ""
+}
+
 // Value is one printed value: the text a reader sees, plus the number behind it
 // when the value is one. A spreadsheet cell has to hold the number to stay
 // summable, while a page prints the text — and the text is the same string the
@@ -63,6 +72,14 @@ type Value struct {
 	Text     string
 	Number   float64
 	IsNumber bool
+}
+
+// Class is the alignment class an HTML render should use for this value.
+func (v Value) Class() string {
+	if v.IsNumber {
+		return "num"
+	}
+	return ""
 }
 
 // textValue is a value with no number behind it, such as a label.

@@ -8,12 +8,17 @@ plugs in.
 | Piece | Where |
 |---|---|
 | Interface, slots, mapping, validation | `backend/internal/template/template.go` |
-| Template source (lookup + list) | `backend/internal/template/registry.go` |
+| Built-in template registry | `backend/internal/template/registry.go` |
+| `Source` interface, `RegistrySource`, `CompositeSource`, `RenderWith`/`DocumentWith`/`ValidateConfigWith` | `backend/internal/template/source.go` |
+| Block catalog + `CustomTemplate` composition engine | `backend/internal/template/blocks.go` |
+| Custom template persistence (per user) | `backend/internal/template/customstore.go` |
+| Per-user archive overlay (built-in + custom) | `backend/internal/template/archive.go` |
 | Shared document shell, CSS, value formatting | `backend/internal/template/document.go` |
 | Starter templates | `tabular.go`, `grouped.go`, `kpi.go` |
 | HTTP endpoints | `backend/internal/report/handlers.go` |
 | Persisted selection + mapping | `reports.template_id`, `reports.template_config` |
-| Template picker and field mapping UI | `frontend/app/ui/template-picker.tsx` |
+| Custom template + archive tables | `custom_templates`, `template_archive_state` |
+| Template picker, block builder, and field mapping UI | `frontend/app/ui/template-picker.tsx` |
 
 ## The interface
 
@@ -95,14 +100,15 @@ That's the whole checklist — no handler, storage, or frontend change. The UI
 picks up the new template from `GET /api/report-templates` and generates its
 mapping controls from the slots.
 
-## Plugging in the v2 drag-and-drop builder
+## The block-composed "Build my own design" template (implemented)
 
-The builder becomes a **template source**, not a second rendering path. Today
-`Registry` is the only source: process-wide, built at startup from `Starters()`,
-and reached through `Get`/`List`/`Render`.
+The drag-and-drop builder sketched below shipped as block *composition and
+ordering* — drag-and-drop itself stayed out of scope; reordering uses up/down
+buttons. It plugs in exactly as a **template source**, not a second rendering
+path, per the plan this section used to describe as a future.
 
-A builder produces per-user templates, so v2 introduces a source interface the
-handlers depend on instead of the concrete registry:
+`backend/internal/template/source.go` introduces the interface the report
+pipeline now depends on instead of the concrete `Registry`:
 
 ```go
 type Source interface {
@@ -111,23 +117,72 @@ type Source interface {
 }
 ```
 
-- The built-in `Registry` satisfies it by ignoring `userID` — the starters are
-  available to everyone.
-- A `BuilderSource` loads a user's saved layout from the database and returns a
-  `Template` that renders it. A builder layout is data; the type that renders
-  that data is what implements the interface.
-- A composite source checks the user's own templates first, then the starters.
+- `RegistrySource` adapts `*Registry` to `Source` by ignoring `userID` — the
+  starters stay available to everyone.
+- `CustomStore` (`customstore.go`) persists a user's own block-composed
+  templates in the `custom_templates` table — id, owning user id, name,
+  description, an ordered `blocks` JSONB array, timestamps. It's a
+  `CustomSource`: `List`/`Get`, both scoped to the owning user, so one
+  account never resolves another's design.
+- `ArchiveStore` (`archive.go`) is a single, unified per-user overlay over the
+  `template_archive_state` table, keyed by `(user_id, template_id)`. It
+  applies to built-in and custom template IDs alike, since archiving a
+  built-in can't be a column on a row the user doesn't own. Archiving never
+  deletes or blocks a template — `Get` ignores archive state entirely, so a
+  report that already references an archived template keeps rendering; only
+  `List`'s default listing excludes what the user archived.
+- `CompositeSource` (`source.go`) merges `Registry` + `CustomStore` +
+  `ArchiveStore` into the one `Source` the pipeline holds. `report.Runner` and
+  `report.Handlers` now depend on `template.Source`, not `*template.Registry`
+  directly; `report.Runner.Document` passes the report's own `UserID` through
+  (a report already carries who it belongs to) so a custom template resolves
+  correctly no matter who's viewing it.
+- `RenderWith`, `DocumentWith`, `ValidateConfigWith` in `source.go` are the
+  `Source`-shaped equivalents of `Registry.Render`/`Document`/`ValidateConfig`
+  — same gate (`Validate` before running), just resolving through a `Source`
+  and a `userID` instead of a fixed registry.
 
-What does **not** change: `Template`, `Meta`, `Slot`, `Config`, `Data`,
-`Validate`, the stored `template_id` + `template_config`, the HTTP endpoints, and
-the UI — because the UI already renders whatever slots a template declares
-rather than anything specific to the starters.
+What did **not** change, as planned: `Template`, `Meta`, `Slot`, `Config`,
+`Data`, `Validate`, the stored `template_id` + `template_config` columns, and
+the frontend's slot-driven mapping UI — a block-composed template declares its
+slots through the same `Meta.Slots` shape any starter does.
+
+### The block catalog
+
+`backend/internal/template/blocks.go` defines the catalog a design is composed
+from — `table`, `grouped-table`, `kpi-tiles`, `text` — and `CustomTemplate`,
+the `Template`+`Documenter` that composes an ordered `[]BlockDef` into a `Doc`
+the same way `tabular.go`/`grouped.go`/`kpi.go` build theirs, reusing the same
+underlying helpers (`data.resolve`, `tableFrom`, `sum`, `emptyNote`) so a
+composed block's empty/partial-mapping/non-numeric behavior matches the
+starters exactly.
+
+- A block's `Title` doubles as its user-facing label; a stable `ID` (assigned
+  once, kept across reorders and edits via `PrepareBlocks`) namespaces its
+  slot keys (`"<blockID>:columns"`, `"<blockID>:group"`, `"<blockID>:metrics"`)
+  so two blocks of the same kind — even with colliding titles — never collide
+  in the mapping, and the mapping UI can still show each labelled with its
+  block's title.
+- `CustomTemplate.Render` calls `CustomTemplate.Document` and prints the
+  result generically (`customBody`, a single template that walks whatever
+  `Blocks` came out) — so the HTML page and the structural projection a PDF or
+  spreadsheet builds from are literally the same computation, not two that
+  have to be kept in sync by hand.
+- Adding a fifth block kind (a chart, an image) means extending
+  `isKnownBlockKind`, `blockSlots`, and `blockDoc`'s switches — the
+  composition engine, the ordering UI, and the rendering pipeline don't
+  change.
 
 ## API
 
 | Endpoint | Purpose |
 |---|---|
-| `GET /api/report-templates` | Templates with their slots — the picker and mapping UI are built from this |
+| `GET /api/report-templates` | Every built-in plus the user's own custom templates, minus what they've archived, each with `slots`, `owned`, `archived` — the picker and mapping UI are built from this |
+| `GET /api/report-templates/archived` | The templates (built-in or custom) this user has archived, for the picker's collapsible "Show archived" section |
+| `POST /api/report-templates` | Saves a block composition as a named, reusable custom template |
+| `PUT /api/report-templates/{id}` | Reworks a saved custom template's blocks — a live reference, so this changes every report using it, going forward |
+| `POST /api/report-templates/{id}/archive` | Hides a template (built-in or custom) from this user's default listing |
+| `POST /api/report-templates/{id}/restore` | Un-hides it |
 | `POST /api/reports/preview-template` | Runs the query, renders the chosen template with the real rows, returns `{ "html": ... }` |
 | `POST /api/reports` | Saves `templateId` + `templateConfig` with the rest of the report |
 | `GET /api/reports/{id}/download?format=` | Runs the report and returns one of its files |

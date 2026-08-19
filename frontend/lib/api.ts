@@ -197,7 +197,7 @@ export async function createGoogleSheetsDataSource(
   return response.json();
 }
 
-export type LLMProviderType = "claude" | "openai";
+export type LLMProviderType = "claude" | "openai" | "openrouter";
 
 export type LLMConfig = {
   id: string;

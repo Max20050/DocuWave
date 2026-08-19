@@ -6,6 +6,7 @@ import type { LLMConfigInput, LLMProviderType } from "@/lib/api";
 const PROVIDER_OPTIONS: { value: LLMProviderType; label: string }[] = [
   { value: "claude", label: "Claude" },
   { value: "openai", label: "GPT-4o (OpenAI)" },
+  { value: "openrouter", label: "OpenRouter" },
 ];
 
 const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";

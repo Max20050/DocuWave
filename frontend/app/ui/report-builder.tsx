@@ -401,7 +401,7 @@ function PlaceholderFilterEditor({
     <fieldset className="flex flex-col gap-2">
       <legend className="text-sm font-medium">Inputs</legend>
       <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        Filters filled in from the recipient a report is sent to, once that's set up — not from a
+        Filters filled in from the recipient a report is sent to, once that&apos;s set up — not from a
         value you type now.
       </p>
       {filters.map((filter, index) => (
@@ -534,8 +534,6 @@ export function ReportBuilder({
   useEffect(() => {
     if (!dataSourceId) return;
     let active = true;
-    setSchema(null);
-    setSchemaError(null);
     getDataSourceSchema(token, dataSourceId)
       .then((result) => {
         if (active) setSchema(result);
@@ -647,8 +645,14 @@ export function ReportBuilder({
   }
 
   // A specification built against one source means nothing against another.
+  // The schema is reset here, at the change itself, rather than in the effect
+  // that fetches the new one — dataSourceId only ever changes through this
+  // function, so the effect doesn't need to (and, as a set-state-in-effect
+  // call, shouldn't) reset it again on the render that follows.
   function handleSourceChange(id: string) {
     setDataSourceId(id);
+    setSchema(null);
+    setSchemaError(null);
     setSpec(emptyQuerySpec());
     setPreview(null);
     setPreviewError(null);

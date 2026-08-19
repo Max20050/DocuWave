@@ -75,7 +75,7 @@ export function RecipientForm({ onCreate }: { onCreate: (input: RecipientInput) 
       <fieldset className="flex flex-col gap-2">
         <legend className="text-sm font-medium">Attributes</legend>
         <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Free-form values a report's inputs can filter by, e.g. region or department.
+          Free-form values a report&apos;s inputs can filter by, e.g. region or department.
         </p>
         {attributes.map((row, index) => (
           <div key={index} className="flex items-center gap-2">

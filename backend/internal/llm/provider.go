@@ -26,12 +26,13 @@ type Provider interface {
 type providerFactory func(apiKey string) Provider
 
 var providerRegistry = map[string]providerFactory{
-	"claude": func(apiKey string) Provider { return &claudeProvider{apiKey: apiKey} },
-	"openai": func(apiKey string) Provider { return &openAIProvider{apiKey: apiKey} },
+	"claude":     func(apiKey string) Provider { return &claudeProvider{apiKey: apiKey} },
+	"openai":     func(apiKey string) Provider { return &openAIProvider{apiKey: apiKey} },
+	"openrouter": func(apiKey string) Provider { return &openRouterProvider{apiKey: apiKey} },
 }
 
 // SupportedProviders lists the provider identifiers accepted by NewProvider.
-var SupportedProviders = []string{"claude", "openai"}
+var SupportedProviders = []string{"claude", "openai", "openrouter"}
 
 // NewProvider builds a Provider for the given provider type.
 func NewProvider(providerType string, apiKey string) (Provider, error) {

@@ -37,11 +37,19 @@ type claudeResponse struct {
 }
 
 func (p *claudeProvider) GenerateQuery(ctx context.Context, schema string, prompt string) (string, error) {
+	return p.send(ctx, fmt.Sprintf("Schema:\n%s\n\nRequest:\n%s", schema, prompt))
+}
+
+func (p *claudeProvider) GenerateText(ctx context.Context, prompt string) (string, error) {
+	return p.send(ctx, prompt)
+}
+
+func (p *claudeProvider) send(ctx context.Context, content string) (string, error) {
 	reqBody := claudeRequest{
 		Model:     claudeModel,
 		MaxTokens: 1024,
 		Messages: []claudeMessage{
-			{Role: "user", Content: fmt.Sprintf("Schema:\n%s\n\nRequest:\n%s", schema, prompt)},
+			{Role: "user", Content: content},
 		},
 	}
 	body, err := json.Marshal(reqBody)

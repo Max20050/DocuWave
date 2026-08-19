@@ -259,3 +259,112 @@ func TestPrepareBlocksDeduplicatesColldingIDs(t *testing.T) {
 		t.Fatalf("got two blocks sharing ID %q, want them disambiguated", prepared[0].ID)
 	}
 }
+
+// An ai-summary block declares an optional columns slot and a required
+// prompt slot, and — unlike every other block kind — contributes no slot for
+// its own generated text: that's threaded in separately by WithAISummaryText.
+func TestAISummaryBlockSlots(t *testing.T) {
+	custom := CustomTemplate{ID: "c-1", Name: "Overview", Blocks: []BlockDef{
+		{ID: "b1", Kind: BlockAISummary, Title: "Insight"},
+	}}
+	slots := custom.Meta().Slots
+	if len(slots) != 4 { // title, note, b1:columns, b1:prompt
+		t.Fatalf("got %d slots, want 4 (title, note, columns, prompt)", len(slots))
+	}
+
+	var columnsSlot, promptSlot *Slot
+	for i := range slots {
+		switch slots[i].Key {
+		case "b1:columns":
+			columnsSlot = &slots[i]
+		case "b1:prompt":
+			promptSlot = &slots[i]
+		}
+	}
+	if columnsSlot == nil || promptSlot == nil {
+		t.Fatalf("got slots %+v, want a b1:columns and a b1:prompt slot", slots)
+	}
+	if columnsSlot.Required {
+		t.Error("the columns slot should be optional")
+	}
+	if columnsSlot.Kind != SlotColumns {
+		t.Errorf("got columns slot kind %q, want %q", columnsSlot.Kind, SlotColumns)
+	}
+	if !promptSlot.Required {
+		t.Error("the prompt slot should be required")
+	}
+	if promptSlot.Kind != SlotText {
+		t.Errorf("got prompt slot kind %q, want %q", promptSlot.Kind, SlotText)
+	}
+}
+
+// An ai-summary block prints a placeholder until a report's runner has
+// generated its text — Document and Render never call a model themselves.
+func TestAISummaryBlockUnmapped(t *testing.T) {
+	custom := CustomTemplate{ID: "c-1", Name: "Overview", Blocks: []BlockDef{
+		{ID: "b1", Kind: BlockAISummary, Title: "Insight"},
+	}}
+	doc := custom.Document(sampleData(), Config{})
+	if doc.Blocks[0].Note != blockAISummaryUnmappedNote {
+		t.Errorf("got note %q, want the unmapped placeholder", doc.Blocks[0].Note)
+	}
+}
+
+// WithAISummaryText is how a runner threads a generated (or failed) summary
+// back into the config Document and Render print from.
+func TestWithAISummaryText(t *testing.T) {
+	block := BlockDef{ID: "b1", Kind: BlockAISummary, Title: "Insight"}
+	custom := CustomTemplate{ID: "c-1", Name: "Overview", Blocks: []BlockDef{block}}
+
+	original := Config{Text: map[string]string{"title": "Q3"}}
+	withSummary := WithAISummaryText(original, block, "Sales are up 12%.")
+
+	// The original config is untouched — Document/Render can be called
+	// against either without one call's result leaking into the other.
+	if _, ok := original.Text["b1:summary"]; ok {
+		t.Fatal("WithAISummaryText mutated the original config's map")
+	}
+	if withSummary.TextFor("title") != "Q3" {
+		t.Error("WithAISummaryText dropped an existing text value")
+	}
+
+	doc := custom.Document(sampleData(), withSummary)
+	if doc.Blocks[0].Note != "Sales are up 12%." {
+		t.Errorf("got note %q, want the generated summary", doc.Blocks[0].Note)
+	}
+}
+
+// AISummaryColumns and AISummaryPrompt read a block's configured columns and
+// prompt back out of a report's Config — what a runner needs to build the
+// model's context without reaching into slot keys itself.
+func TestAISummaryColumnsAndPrompt(t *testing.T) {
+	block := BlockDef{ID: "b1", Kind: BlockAISummary}
+	cfg := Config{
+		Columns: map[string][]string{"b1:columns": {"region", "revenue"}},
+		Text:    map[string]string{"b1:prompt": "Summarize this."},
+	}
+	if got := AISummaryColumns(block, cfg); len(got) != 2 || got[0] != "region" || got[1] != "revenue" {
+		t.Errorf("got columns %v, want [region revenue]", got)
+	}
+	if got := AISummaryPrompt(block, cfg); got != "Summarize this." {
+		t.Errorf("got prompt %q, want %q", got, "Summarize this.")
+	}
+}
+
+// AISummaryBlocks finds only the ai-summary blocks a template composes from,
+// in order, and returns nil for a starter template, which never has any.
+func TestAISummaryBlocksOfTemplate(t *testing.T) {
+	custom := CustomTemplate{ID: "c-1", Name: "Overview", Blocks: []BlockDef{
+		{ID: "b1", Kind: BlockTable, Title: "Rows"},
+		{ID: "b2", Kind: BlockAISummary, Title: "First"},
+		{ID: "b3", Kind: BlockAISummary, Title: "Second"},
+	}}
+	blocks := AISummaryBlocks(custom)
+	if len(blocks) != 2 || blocks[0].Title != "First" || blocks[1].Title != "Second" {
+		t.Fatalf("got %+v, want the two ai-summary blocks in order", blocks)
+	}
+
+	if got := AISummaryBlocks(Tabular{}); got != nil {
+		t.Errorf("got %+v for a starter template, want nil", got)
+	}
+}

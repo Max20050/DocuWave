@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/Max20050/docuwave/internal/datasource"
+	"github.com/Max20050/docuwave/internal/llm"
 	"github.com/Max20050/docuwave/internal/query"
 	"github.com/Max20050/docuwave/internal/render"
 	"github.com/Max20050/docuwave/internal/template"
@@ -38,14 +40,19 @@ type Runner struct {
 	resolver  *datasource.Resolver
 	schemas   *datasource.SchemaProvider
 	templates template.Source
+	// summaries generates the text an ai-summary block prints, from the
+	// report owner's own configured LLM provider. It's nil in tests that never
+	// exercise a template with such a block.
+	summaries *llm.Generator
 }
 
 func NewRunner(
 	resolver *datasource.Resolver,
 	schemas *datasource.SchemaProvider,
 	templates template.Source,
+	summaries *llm.Generator,
 ) *Runner {
-	return &Runner{resolver: resolver, schemas: schemas, templates: templates}
+	return &Runner{resolver: resolver, schemas: schemas, templates: templates, summaries: summaries}
 }
 
 // runnable is a compiled query with everything needed to run it.
@@ -128,16 +135,133 @@ func (r *Runner) Document(ctx context.Context, rep Report) (template.Doc, error)
 		return template.Doc{}, fmt.Errorf("%w: %v", ErrQueryFailed, err)
 	}
 
-	doc, err := template.DocumentWith(ctx, r.templates, rep.UserID, rep.TemplateID, template.Data{
-		Columns:     result.Columns,
-		Rows:        result.Rows,
-		GeneratedAt: time.Now(),
-	}, rep.TemplateConfig)
+	data := template.Data{Columns: result.Columns, Rows: result.Rows, GeneratedAt: time.Now()}
+
+	t, err := r.templates.Get(ctx, rep.UserID, rep.TemplateID)
 	if err != nil {
 		log.Printf("report %s: template %s failed: %v", rep.ID, rep.TemplateID, err)
 		return template.Doc{}, err
 	}
-	return doc, nil
+	if err := template.Validate(t, rep.TemplateConfig, data.Columns); err != nil {
+		log.Printf("report %s: template %s failed: %v", rep.ID, rep.TemplateID, err)
+		return template.Doc{}, err
+	}
+
+	// Every ai-summary block's text is generated fresh for this run — a
+	// report is rendered again for every recipient and every schedule, and
+	// the data behind it can have changed since the last time. A block that
+	// fails to generate doesn't fail the report: its own spot in the document
+	// says so instead, and everything else still renders.
+	cfg := rep.TemplateConfig
+	for _, block := range template.AISummaryBlocks(t) {
+		cfg = template.WithAISummaryText(cfg, block, r.aiSummaryText(ctx, rep, data, block))
+	}
+
+	return template.DocumentOf(t, data, cfg), nil
+}
+
+// aiSummaryText produces the text one ai-summary block prints: the model's
+// answer to the block's prompt, given the report's own selected columns and
+// whatever additional queries the block defines. A failure anywhere in that
+// — no provider configured, the provider's API rejected the call, an extra
+// query failed — comes back as text explaining what went wrong, rather than
+// an error, so it never takes the rest of the report down with it.
+func (r *Runner) aiSummaryText(ctx context.Context, rep Report, data template.Data, block template.BlockDef) string {
+	if r.summaries == nil {
+		return "AI summaries are not configured on this server."
+	}
+
+	prompt := template.AISummaryPrompt(block, rep.TemplateConfig)
+	if prompt == "" {
+		return "This block has no prompt configured."
+	}
+
+	contextText, err := r.aiSummaryContext(ctx, rep, data, block)
+	if err != nil {
+		log.Printf("report %s: ai-summary block %q: gathering context failed: %v", rep.ID, block.Title, err)
+		return fmt.Sprintf("Could not gather this summary's data: %v", err)
+	}
+
+	full := prompt
+	if contextText != "" {
+		full = fmt.Sprintf("%s\n\nData:\n%s", prompt, contextText)
+	}
+
+	text, err := r.summaries.GenerateSummary(ctx, rep.UserID, full)
+	if err != nil {
+		log.Printf("report %s: ai-summary block %q: generation failed: %v", rep.ID, block.Title, err)
+		return fmt.Sprintf("Could not generate this summary: %v", err)
+	}
+	return text
+}
+
+// aiSummaryContext assembles the plain-text data an ai-summary block sends
+// the model: the report's own already-filtered rows, cut down to the columns
+// the block chose, followed by the block's additional queries — run against
+// the same data source, never shown in the document itself.
+func (r *Runner) aiSummaryContext(ctx context.Context, rep Report, data template.Data, block template.BlockDef) (string, error) {
+	var sections []string
+
+	if columns := template.AISummaryColumns(block, rep.TemplateConfig); len(columns) > 0 {
+		sections = append(sections, formatColumnsAsText("This report's own data", columns, data))
+	}
+
+	for _, extra := range block.Queries {
+		prepared, err := r.prepare(ctx, rep.UserID, rep.DataSourceID, extra.Spec)
+		if err != nil {
+			return "", fmt.Errorf("query %q: %w", extra.Title, err)
+		}
+
+		queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
+		result, err := prepared.run(queryCtx, runLimit(extra.Spec))
+		cancel()
+		if err != nil {
+			return "", fmt.Errorf("query %q: %w", extra.Title, err)
+		}
+
+		title := extra.Title
+		if title == "" {
+			title = "Additional data"
+		}
+		sections = append(sections, formatColumnsAsText(title, result.Columns, template.Data{
+			Columns: result.Columns, Rows: result.Rows,
+		}))
+	}
+
+	return strings.Join(sections, "\n\n"), nil
+}
+
+// formatColumnsAsText prints a subset of a query's columns as a small text
+// table — plain rows a model can read, not a document a person is meant to.
+// Columns the query didn't return are skipped rather than failing: a stale
+// mapping shouldn't keep the rest of the summary from generating.
+func formatColumnsAsText(title string, columns []string, data template.Data) string {
+	index := make(map[string]int, len(data.Columns))
+	for i, name := range data.Columns {
+		index[name] = i
+	}
+	kept := make([]string, 0, len(columns))
+	for _, name := range columns {
+		if _, ok := index[name]; ok {
+			kept = append(kept, name)
+		}
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s (%s):\n", title, strings.Join(kept, ", "))
+	for _, row := range data.Rows {
+		values := make([]string, len(kept))
+		for i, name := range kept {
+			if col := index[name]; col < len(row) {
+				values[i] = fmt.Sprint(row[col])
+			}
+		}
+		fmt.Fprintf(&b, "- %s\n", strings.Join(values, " | "))
+	}
+	return b.String()
 }
 
 // Render produces every file a report is configured for, in memory, ready for

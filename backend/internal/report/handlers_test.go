@@ -20,7 +20,7 @@ import (
 )
 
 func TestHandlersRequireAuthentication(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil, nil, nil)
+	handlers := NewHandlers(nil, nil, nil, nil, nil, nil, false)
 
 	cases := map[string]struct {
 		handler http.HandlerFunc
@@ -34,6 +34,7 @@ func TestHandlersRequireAuthentication(t *testing.T) {
 		"archive template":        {handlers.ArchiveTemplate, httptest.NewRequest(http.MethodPost, "/api/report-templates/tabular/archive", nil)},
 		"restore template":        {handlers.RestoreTemplate, httptest.NewRequest(http.MethodPost, "/api/report-templates/tabular/restore", nil)},
 		"preview template":        {handlers.PreviewTemplate, httptest.NewRequest(http.MethodPost, "/api/reports/preview-template", nil)},
+		"preview ai summary":      {handlers.PreviewAISummary, httptest.NewRequest(http.MethodPost, "/api/reports/preview-ai-summary", nil)},
 		"create":                  {handlers.Create, httptest.NewRequest(http.MethodPost, "/api/reports", nil)},
 		"list":                    {handlers.List, httptest.NewRequest(http.MethodGet, "/api/reports", nil)},
 		"download":                {handlers.Download, httptest.NewRequest(http.MethodGet, "/api/reports/r-1/download", nil)},
@@ -189,7 +190,7 @@ func TestWriteTemplateError(t *testing.T) {
 // The UI builds its template picker and its field mapping controls from this
 // response, so it has to carry every slot.
 func TestListTemplates(t *testing.T) {
-	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil)
+	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil, nil, false)
 
 	recorder := httptest.NewRecorder()
 	handlers.ListTemplates(recorder, authenticatedRequest(t, http.MethodGet, "/api/report-templates", nil))
@@ -215,7 +216,7 @@ func TestListTemplates(t *testing.T) {
 // A custom template needs a name — the same rule reports themselves already
 // follow — checked before it ever reaches the store.
 func TestCreateCustomTemplateRequiresAName(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil, nil, nil)
+	handlers := NewHandlers(nil, nil, nil, nil, nil, nil, false)
 
 	body, err := json.Marshal(customTemplateRequest{Description: "no name"})
 	if err != nil {
@@ -237,7 +238,7 @@ func TestCreateCustomTemplateRequiresAName(t *testing.T) {
 // A block naming a kind outside the catalog is rejected before it's saved,
 // for both creating and updating a custom template.
 func TestCustomTemplateRejectsUnknownBlockKind(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil, nil, nil)
+	handlers := NewHandlers(nil, nil, nil, nil, nil, nil, false)
 	req := customTemplateRequest{
 		Name:   "Bad design",
 		Blocks: []template.BlockDef{{Kind: "chart", Title: "Nope"}},
@@ -267,9 +268,55 @@ func TestCustomTemplateRejectsUnknownBlockKind(t *testing.T) {
 	}
 }
 
+// ai-summary blocks are rejected while the feature flag is off, the same way
+// an unknown block kind is — the product isn't meant to ship this to anyone
+// until a cost estimator exists.
+func TestCustomTemplateRejectsAISummaryBlocksWhenDisabled(t *testing.T) {
+	handlers := NewHandlers(nil, nil, nil, nil, nil, nil, false)
+	req := customTemplateRequest{
+		Name:   "Design",
+		Blocks: []template.BlockDef{{Kind: template.BlockAISummary, Title: "Insight"}},
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal returned error: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := authenticatedRequest(t, http.MethodPost, "/api/report-templates", bytes.NewReader(body))
+	handlers.CreateCustomTemplate(recorder, request)
+
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("got status %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(recorder.Body.String(), ErrAISummaryDisabled.Error()) {
+		t.Errorf("body %q does not explain the block is disabled", recorder.Body.String())
+	}
+}
+
+// checkAISummaryBlocks is the one gate every save path for a block
+// composition runs through, so it's tested directly for both outcomes rather
+// than only indirectly through the handlers above.
+func TestCheckAISummaryBlocks(t *testing.T) {
+	blocks := []template.BlockDef{{Kind: template.BlockAISummary}}
+
+	disabled := &Handlers{aiSummaryEnabled: false}
+	if err := disabled.checkAISummaryBlocks(blocks); !errors.Is(err, ErrAISummaryDisabled) {
+		t.Errorf("got %v, want ErrAISummaryDisabled while the flag is off", err)
+	}
+
+	enabled := &Handlers{aiSummaryEnabled: true}
+	if err := enabled.checkAISummaryBlocks(blocks); err != nil {
+		t.Errorf("got %v, want no error once the flag is on", err)
+	}
+	if err := disabled.checkAISummaryBlocks([]template.BlockDef{{Kind: template.BlockTable}}); err != nil {
+		t.Errorf("got %v, want no error for a design with no ai-summary block", err)
+	}
+}
+
 // Archiving and restoring both need the ID in the path.
 func TestArchiveAndRestoreTemplateRequireAnID(t *testing.T) {
-	handlers := NewHandlers(nil, nil, nil, nil, nil)
+	handlers := NewHandlers(nil, nil, nil, nil, nil, nil, false)
 
 	for name, handler := range map[string]http.HandlerFunc{
 		"archive": handlers.ArchiveTemplate,
@@ -289,7 +336,7 @@ func TestArchiveAndRestoreTemplateRequireAnID(t *testing.T) {
 // The request is checked before the query runs, so a half-filled preview never
 // reaches the user's data source.
 func TestPreviewTemplateRejectsIncompleteRequests(t *testing.T) {
-	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil)
+	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil, nil, false)
 
 	spec := query.Spec{Table: "sales", Fields: []query.Field{{Column: "region"}}}
 	tests := map[string]previewTemplateRequest{
@@ -491,7 +538,7 @@ func TestWriteRenderError(t *testing.T) {
 // The report has to be loaded before anything runs, so a download of one that
 // isn't there never reaches the user's data source.
 func TestDownloadRequiresAnID(t *testing.T) {
-	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil)
+	handlers := NewHandlers(nil, nil, template.NewRegistrySource(template.NewRegistry(template.Starters()...)), nil, nil, nil, false)
 
 	recorder := httptest.NewRecorder()
 	handlers.Download(recorder, authenticatedRequest(t, http.MethodGet, "/api/reports//download", nil))

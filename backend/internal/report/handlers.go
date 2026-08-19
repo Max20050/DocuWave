@@ -13,6 +13,7 @@ import (
 
 	"github.com/Max20050/docuwave/internal/auth"
 	"github.com/Max20050/docuwave/internal/datasource"
+	"github.com/Max20050/docuwave/internal/llm"
 	"github.com/Max20050/docuwave/internal/query"
 	"github.com/Max20050/docuwave/internal/render"
 	"github.com/Max20050/docuwave/internal/template"
@@ -33,6 +34,14 @@ type Handlers struct {
 	// report and starter-template paths, which never reach them.
 	custom  *template.CustomStore
 	archive *template.ArchiveStore
+	// summaries generates ai-summary block text for the "Probar resumen" test
+	// call. It's nil in tests that never exercise that path.
+	summaries *llm.Generator
+	// aiSummaryEnabled gates every ai-summary-block affordance behind a single
+	// switch: the product isn't meant to ship this to anyone until a cost
+	// estimator exists, so until then this stays off outside of whoever
+	// explicitly turned it on to develop against it.
+	aiSummaryEnabled bool
 }
 
 func NewHandlers(
@@ -41,8 +50,53 @@ func NewHandlers(
 	templates template.Source,
 	custom *template.CustomStore,
 	archive *template.ArchiveStore,
+	summaries *llm.Generator,
+	aiSummaryEnabled bool,
 ) *Handlers {
-	return &Handlers{store: store, runner: runner, templates: templates, custom: custom, archive: archive}
+	return &Handlers{
+		store: store, runner: runner, templates: templates, custom: custom, archive: archive,
+		summaries: summaries, aiSummaryEnabled: aiSummaryEnabled,
+	}
+}
+
+// ErrAISummaryDisabled is returned for any attempt to save an ai-summary
+// block while the feature is switched off.
+var ErrAISummaryDisabled = errors.New("AI summary blocks are not available yet")
+
+// checkAISummaryBlocks rejects blocks the feature flag doesn't allow yet.
+// PrepareBlocks already proved every block names a known catalog kind; this
+// is the one further check specific to a kind still behind a flag.
+func (h *Handlers) checkAISummaryBlocks(blocks []template.BlockDef) error {
+	if h.aiSummaryEnabled {
+		return nil
+	}
+	for _, b := range blocks {
+		if b.Kind == template.BlockAISummary {
+			return ErrAISummaryDisabled
+		}
+	}
+	return nil
+}
+
+// requireAIProviderIfNeeded rejects saving a report against a template that
+// has ai-summary blocks when its owner has no LLM provider configured yet —
+// better to say so now than to have every future run of a scheduled report
+// print "could not generate this summary" unattended.
+func (h *Handlers) requireAIProviderIfNeeded(ctx context.Context, userID string, t template.Template) error {
+	if len(template.AISummaryBlocks(t)) == 0 {
+		return nil
+	}
+	if h.summaries == nil {
+		return ErrAISummaryDisabled
+	}
+	has, err := h.summaries.HasProvider(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if !has {
+		return fmt.Errorf("this report uses an AI summary block: configure an LLM provider first")
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
@@ -363,6 +417,10 @@ func (h *Handlers) CreateCustomTemplate(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if err := h.checkAISummaryBlocks(blocks); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	created, err := h.custom.Create(r.Context(), userID, template.CustomTemplate{
 		Name:        req.Name,
@@ -403,6 +461,10 @@ func (h *Handlers) UpdateCustomTemplate(w http.ResponseWriter, r *http.Request) 
 
 	blocks, err := template.PrepareBlocks(req.Blocks)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.checkAISummaryBlocks(blocks); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -554,6 +616,86 @@ func (h *Handlers) PreviewTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, previewTemplateResponse{HTML: string(html)})
 }
 
+type previewAISummaryRequest struct {
+	DataSourceID string     `json:"dataSourceId"`
+	QuerySpec    query.Spec `json:"querySpec"`
+	// Columns are the report query's own output columns to share with the
+	// model, the same ones the block's "Context columns" slot maps.
+	Columns []string `json:"columns"`
+	Prompt  string   `json:"prompt"`
+	// Queries are the block's additional queries, run only to gather context —
+	// never shown in the document.
+	Queries []template.AISummaryQuery `json:"queries"`
+}
+
+type previewAISummaryResponse struct {
+	Text string `json:"text"`
+}
+
+// PreviewAISummary handles POST /api/reports/preview-ai-summary: the "Probar
+// resumen" button. It's the only path that calls a model before a report is
+// saved — everything else about an ai-summary block only prints a
+// placeholder until the report actually runs — so a user can check a prompt
+// works without waiting for, or paying for, an unattended run.
+func (h *Handlers) PreviewAISummary(w http.ResponseWriter, r *http.Request) {
+	userID, ok := auth.UserIDFromContext(r.Context())
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	if !h.aiSummaryEnabled || h.summaries == nil {
+		writeError(w, http.StatusBadRequest, ErrAISummaryDisabled.Error())
+		return
+	}
+
+	var req previewAISummaryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if req.DataSourceID == "" {
+		writeError(w, http.StatusBadRequest, "dataSourceId is required")
+		return
+	}
+	if req.Prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+
+	prepared, err := h.runner.prepare(r.Context(), userID, req.DataSourceID, req.QuerySpec)
+	if err != nil {
+		writeQueryError(w, err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), queryTimeout)
+	defer cancel()
+
+	result, err := prepared.run(ctx, previewLimit(req.QuerySpec))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("query failed: %v", err))
+		return
+	}
+
+	// A synthetic block and report carry just enough for the runner's own
+	// context and generation logic to run unchanged — the same code path a
+	// saved report uses, so what this returns is what the report will
+	// actually print. "preview" is an arbitrary block ID: nothing here is
+	// persisted, so it only has to be internally consistent.
+	block := template.BlockDef{ID: "preview", Kind: template.BlockAISummary, Title: "Preview", Queries: req.Queries}
+	rep := Report{
+		UserID:       userID,
+		DataSourceID: req.DataSourceID,
+		TemplateConfig: template.Config{
+			Columns: map[string][]string{"preview:columns": req.Columns},
+			Text:    map[string]string{"preview:prompt": req.Prompt},
+		},
+	}
+
+	text := h.runner.aiSummaryText(r.Context(), rep, template.Data{Columns: result.Columns, Rows: result.Rows}, block)
+	writeJSON(w, http.StatusOK, previewAISummaryResponse{Text: text})
+}
+
 type createReportRequest struct {
 	Name         string `json:"name"`
 	DataSourceID string `json:"dataSourceId"`
@@ -606,8 +748,21 @@ func (h *Handlers) Create(w http.ResponseWriter, r *http.Request) {
 	// The mapping is checked against the template's slots, but not against the
 	// query's columns: that would mean running the query to save a report.
 	// Rendering re-checks it against the rows it actually gets.
-	if err := template.ValidateConfigWith(r.Context(), h.templates, userID, req.TemplateID, req.TemplateConfig); err != nil {
+	t, err := h.templates.Get(r.Context(), userID, req.TemplateID)
+	if err != nil {
 		writeTemplateError(w, err)
+		return
+	}
+	if err := template.Validate(t, req.TemplateConfig, nil); err != nil {
+		writeTemplateError(w, err)
+		return
+	}
+	if err := h.checkAISummaryBlocks(template.AISummaryBlocks(t)); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := h.requireAIProviderIfNeeded(r.Context(), userID, t); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

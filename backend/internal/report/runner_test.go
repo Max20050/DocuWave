@@ -6,14 +6,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Max20050/docuwave/internal/llm"
 	"github.com/Max20050/docuwave/internal/query"
 	"github.com/Max20050/docuwave/internal/render"
+	"github.com/Max20050/docuwave/internal/template"
 )
 
 // A report saved before query building has query text but no specification, and
 // nothing runs stored text — so it fails before it reaches the data source.
 func TestDocumentRejectsALegacyReport(t *testing.T) {
-	runner := NewRunner(nil, nil, nil)
+	runner := NewRunner(nil, nil, nil, nil)
 
 	_, err := runner.Document(context.Background(), Report{
 		ID:    "r-legacy",
@@ -27,7 +29,7 @@ func TestDocumentRejectsALegacyReport(t *testing.T) {
 // The formats a report is configured for are what its client agreed to receive,
 // so a request for another one is refused before the query runs.
 func TestRenderFormatRejectsAnUnconfiguredFormat(t *testing.T) {
-	runner := NewRunner(nil, nil, nil)
+	runner := NewRunner(nil, nil, nil, nil)
 	rep := Report{
 		ID:        "r-1",
 		Name:      "Monthly sales",
@@ -64,5 +66,64 @@ func TestRunLimit(t *testing.T) {
 				t.Errorf("got %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// formatColumnsAsText is what turns a report's rows into the plain-text
+// context an ai-summary block's prompt is built from.
+func TestFormatColumnsAsText(t *testing.T) {
+	data := template.Data{
+		Columns: []string{"region", "revenue", "notes"},
+		Rows: [][]any{
+			{"North", 100, "steady"},
+			{"South", 200, "growing"},
+		},
+	}
+
+	// A stale column the query no longer returns is dropped rather than
+	// failing the whole summary.
+	got := formatColumnsAsText("Sales", []string{"region", "revenue", "profit"}, data)
+	if !strings.Contains(got, "Sales (region, revenue):") {
+		t.Errorf("got %q, want a header naming only the columns the query returned", got)
+	}
+	if !strings.Contains(got, "North | 100") || !strings.Contains(got, "South | 200") {
+		t.Errorf("got %q, want both rows printed", got)
+	}
+	if strings.Contains(got, "profit") {
+		t.Errorf("got %q, want the stale column left out entirely", got)
+	}
+
+	// None of the requested columns exist: nothing worth printing.
+	if got := formatColumnsAsText("Sales", []string{"profit"}, data); got != "" {
+		t.Errorf("got %q, want an empty section when no requested column exists", got)
+	}
+}
+
+// aiSummaryText never calls a model when the block has nothing to call it
+// with — no configured generator, or no prompt — and says why instead of
+// panicking or returning an empty string.
+func TestAISummaryTextWithoutAProvider(t *testing.T) {
+	runner := &Runner{}
+	rep := Report{UserID: "u-1", TemplateConfig: template.Config{
+		Text: map[string]string{"b1:prompt": "Summarize this."},
+	}}
+	block := template.BlockDef{ID: "b1", Kind: template.BlockAISummary}
+
+	got := runner.aiSummaryText(context.Background(), rep, template.Data{}, block)
+	if !strings.Contains(got, "not configured") {
+		t.Errorf("got %q, want a message explaining summaries aren't configured", got)
+	}
+}
+
+func TestAISummaryTextWithoutAPrompt(t *testing.T) {
+	// A generator is configured here, so this exercises the "no prompt"
+	// message specifically, not the "not configured" one above.
+	runner := &Runner{summaries: llm.NewGenerator(nil, nil)}
+	rep := Report{UserID: "u-1"}
+	block := template.BlockDef{ID: "b1", Kind: template.BlockAISummary}
+
+	got := runner.aiSummaryText(context.Background(), rep, template.Data{}, block)
+	if !strings.Contains(got, "no prompt") {
+		t.Errorf("got %q, want a message explaining the block has no prompt", got)
 	}
 }

@@ -454,6 +454,66 @@ function PlaceholderFilterEditor({
   );
 }
 
+const STEPS = [
+  { n: 1, label: "Source" },
+  { n: 2, label: "Data" },
+  { n: 3, label: "Design" },
+  { n: 4, label: "Publish" },
+] as const;
+
+// StepIndicator shows where the user is in the wizard and lets them jump back
+// to any step already reached — but not ahead of maxUnlocked, which the
+// wizard derives from what's actually been completed so far.
+function StepIndicator({
+  currentStep,
+  maxUnlocked,
+  onSelect,
+}: {
+  currentStep: number;
+  maxUnlocked: number;
+  onSelect: (step: number) => void;
+}) {
+  return (
+    <ol className="flex flex-wrap items-center gap-2 text-sm">
+      {STEPS.map((step, index) => {
+        const unlocked = step.n <= maxUnlocked;
+        const active = step.n === currentStep;
+        const completed = step.n < currentStep;
+        return (
+          <li key={step.n} className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => onSelect(step.n)}
+              disabled={!unlocked}
+              className={`flex items-center gap-2 rounded-full px-3 py-1.5 transition-colors disabled:cursor-not-allowed ${
+                active
+                  ? "bg-foreground text-background"
+                  : unlocked
+                    ? "border border-black/[.1] hover:bg-black/[.04] dark:border-white/[.15] dark:hover:bg-[#1a1a1a]"
+                    : "border border-black/[.1] text-zinc-400 dark:border-white/[.15] dark:text-zinc-600"
+              }`}
+            >
+              <span
+                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${
+                  active
+                    ? "bg-background text-foreground"
+                    : completed
+                      ? "bg-foreground text-background"
+                      : "bg-black/[.06] dark:bg-white/[.1]"
+                }`}
+              >
+                {step.n}
+              </span>
+              {step.label}
+            </button>
+            {index < STEPS.length - 1 && <span className="h-px w-6 bg-black/[.1] dark:bg-white/[.15]" />}
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
 // ReportBuilder walks the user from a data source to a saved report: pick the
 // table and the fields/filters/sort that make up its query specification,
 // preview the rows it returns, pick the template it prints in and map the
@@ -504,6 +564,11 @@ export function ReportBuilder({
   const [rendering, setRendering] = useState(false);
   const [saving, setSaving] = useState(false);
 
+  // currentStep drives which of the wizard's four stages is on screen. It's
+  // clamped below whenever maxUnlocked drops behind it — e.g. changing the
+  // data source invalidates everything downstream of step 1.
+  const [currentStep, setCurrentStep] = useState(1);
+
   // loadTemplates reloads both listings — the picker's default cards and its
   // "Show archived" section — so a save, archive, or restore is reflected
   // immediately without a page refresh.
@@ -547,6 +612,30 @@ export function ReportBuilder({
   }, [token, dataSourceId]);
 
   const columns = columnsFor(schema, spec.table ?? "");
+
+  // needsAIProvider blocks saving before the request would fail: whichever
+  // template is in play — the design being composed, or an already-saved one
+  // just picked — is checked for an ai-summary block, which needs its owner
+  // to have an LLM provider configured.
+  const selectedTemplate = templates.find((t) => t.id === templateId);
+  const blocksInUse = customDraft ? customDraft.blocks : selectedTemplate?.blocks;
+  const needsAIProvider = llmConfig === null && hasAISummaryBlock(blocksInUse);
+
+  // Each step's validity gates the next: a table must be chosen before
+  // querying it, a preview must succeed before picking a template, and a
+  // template must be picked before publishing. maxUnlocked is the furthest
+  // step reachable given what's true right now.
+  const step1Valid = schema !== null && (schema.type === "google_sheets" || (spec.table ?? "") !== "");
+  const step2Valid = step1Valid && preview !== null;
+  const step3Valid = step2Valid && templateId !== "";
+  const maxUnlocked = step3Valid ? 4 : step2Valid ? 3 : step1Valid ? 2 : 1;
+
+  // currentStep can point past maxUnlocked right after something upstream
+  // changes (e.g. picking a new data source invalidates the preview) and the
+  // render that reflects it hasn't happened yet. Deriving the displayed step
+  // here, rather than syncing it back into state via an effect, keeps that
+  // window from ever being rendered.
+  const step = Math.min(currentStep, maxUnlocked);
 
   // A mapping only means something against a known set of columns, so it's
   // rebuilt whenever the preview's columns change.
@@ -707,6 +796,7 @@ export function ReportBuilder({
       setFormats(["pdf"]);
       resetTemplateState();
       setSaved(true);
+      setCurrentStep(1);
     } catch (err) {
       setSaveError(errorMessage(err, "Failed to save the report"));
     } finally {
@@ -724,53 +814,48 @@ export function ReportBuilder({
 
   const canPreview = spec.fields.length > 0 && (schema?.type === "google_sheets" || (spec.table ?? "") !== "");
 
-  // needsAIProvider blocks saving before the request would fail: whichever
-  // template is in play — the design being composed, or an already-saved one
-  // just picked — is checked for an ai-summary block, which needs its owner
-  // to have an LLM provider configured.
-  const selectedTemplate = templates.find((t) => t.id === templateId);
-  const blocksInUse = customDraft ? customDraft.blocks : selectedTemplate?.blocks;
-  const needsAIProvider = llmConfig === null && hasAISummaryBlock(blocksInUse);
-
   return (
     <div className="flex w-full flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <label htmlFor="report-source" className="text-sm font-medium">
-          Data source
-        </label>
-        <select
-          id="report-source"
-          value={dataSourceId}
-          onChange={(e) => handleSourceChange(e.target.value)}
-          className={inputClass}
-        >
-          {sources.map((source) => (
-            <option key={source.id} value={source.id}>
-              {source.name}
-            </option>
-          ))}
-        </select>
-      </div>
+      <StepIndicator currentStep={step} maxUnlocked={maxUnlocked} onSelect={setCurrentStep} />
+      {saved && <p className="text-sm text-green-600">Report saved</p>}
 
-      <div className="flex flex-col gap-1">
-        <label htmlFor="report-prompt" className="text-sm font-medium">
-          Description (optional)
-        </label>
-        <textarea
-          id="report-prompt"
-          rows={2}
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Sum of sales by region for last month"
-          className={inputClass}
-        />
-      </div>
+      {step === 1 && (
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-1">
+            <label htmlFor="report-source" className="text-sm font-medium">
+              Data source
+            </label>
+            <select
+              id="report-source"
+              value={dataSourceId}
+              onChange={(e) => handleSourceChange(e.target.value)}
+              className={inputClass}
+            >
+              {sources.map((source) => (
+                <option key={source.id} value={source.id}>
+                  {source.name}
+                </option>
+              ))}
+            </select>
+          </div>
 
-      {schemaError && <p className="text-sm text-red-600">{schemaError}</p>}
+          <div className="flex flex-col gap-1">
+            <label htmlFor="report-prompt" className="text-sm font-medium">
+              Description (optional)
+            </label>
+            <textarea
+              id="report-prompt"
+              rows={2}
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              placeholder="Sum of sales by region for last month"
+              className={inputClass}
+            />
+          </div>
 
-      {schema && (
-        <div className="flex flex-col gap-4 border-t border-black/[.1] pt-4 dark:border-white/[.15]">
-          {schema.type !== "google_sheets" && (
+          {schemaError && <p className="text-sm text-red-600">{schemaError}</p>}
+
+          {schema && schema.type !== "google_sheets" && (
             <div className="flex flex-col gap-1">
               <label htmlFor="report-table" className="text-sm font-medium">
                 Table
@@ -790,7 +875,11 @@ export function ReportBuilder({
               </select>
             </div>
           )}
+        </div>
+      )}
 
+      {step === 2 && schema && (
+        <div className="flex flex-col gap-4">
           {columns.length > 0 && (
             <>
               <FieldEditor columns={columns} fields={spec.fields} onChange={(fields) => setSpec({ ...spec, fields })} />
@@ -839,69 +928,71 @@ export function ReportBuilder({
               <p className="font-mono text-xs text-zinc-500 dark:text-zinc-400">{preview.sql}</p>
             </>
           )}
+        </div>
+      )}
 
+      {step === 3 && schema && (
+        <div className="flex flex-col gap-4">
           {templatesError && <p className="text-sm text-red-600">{templatesError}</p>}
 
-          {preview === null ? (
-            <p className="text-sm text-zinc-600 dark:text-zinc-400">
-              Run the preview to choose a template and map its fields.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-4 border-t border-black/[.1] pt-4 dark:border-white/[.15]">
-              <TemplatePicker
-                templates={templates}
-                archivedTemplates={archivedTemplates}
-                columns={preview.columns}
-                rows={preview.rows}
-                templateId={templateId}
-                config={templateConfig}
-                onSelect={(id) => applyTemplate(id, preview.columns, preview.rows)}
-                onConfigChange={setTemplateConfig}
-                customDraft={customDraft}
-                onOpenNewCustomTemplate={openNewCustomTemplate}
-                onOpenEditCustomTemplate={openEditCustomTemplate}
-                onCustomDraftChange={setCustomDraft}
-                onSaveCustomTemplate={saveCustomTemplate}
-                onCancelCustomTemplate={() => setCustomDraft(null)}
-                onArchive={handleArchive}
-                onRestore={handleRestore}
-                token={token}
-                schema={schema}
-                dataSourceId={dataSourceId}
-                querySpec={spec}
-              />
-
-              {needsAIProvider && (
-                <p className="text-sm text-amber-600 dark:text-amber-500">
-                  This template uses an AI summary block. Configure an LLM provider in settings before
-                  saving this report.
-                </p>
-              )}
-
-              <div>
-                <button
-                  type="button"
-                  onClick={handlePreviewLayout}
-                  disabled={rendering || templateId === ""}
-                  className="rounded-full border border-black/[.08] px-5 py-2 transition-colors hover:bg-black/[.04] disabled:opacity-50 dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
-                >
-                  {rendering ? "Rendering…" : "Preview layout"}
-                </button>
-              </div>
-              {layoutError && <p className="text-sm text-red-600">{layoutError}</p>}
-              {layout !== null && (
-                <iframe
-                  title="Report layout preview"
-                  srcDoc={layout}
-                  // The document is the user's own data rendered by the server;
-                  // an empty sandbox keeps it from doing anything but display.
-                  sandbox=""
-                  className="h-96 w-full rounded border border-black/[.1] dark:border-white/[.15]"
-                />
-              )}
-            </div>
+          {preview && (
+            <TemplatePicker
+              templates={templates}
+              archivedTemplates={archivedTemplates}
+              columns={preview.columns}
+              rows={preview.rows}
+              templateId={templateId}
+              config={templateConfig}
+              onSelect={(id) => applyTemplate(id, preview.columns, preview.rows)}
+              onConfigChange={setTemplateConfig}
+              customDraft={customDraft}
+              onOpenNewCustomTemplate={openNewCustomTemplate}
+              onOpenEditCustomTemplate={openEditCustomTemplate}
+              onCustomDraftChange={setCustomDraft}
+              onSaveCustomTemplate={saveCustomTemplate}
+              onCancelCustomTemplate={() => setCustomDraft(null)}
+              onArchive={handleArchive}
+              onRestore={handleRestore}
+              token={token}
+              schema={schema}
+              dataSourceId={dataSourceId}
+              querySpec={spec}
+            />
           )}
 
+          {needsAIProvider && (
+            <p className="text-sm text-amber-600 dark:text-amber-500">
+              This template uses an AI summary block. Configure an LLM provider in settings before
+              saving this report.
+            </p>
+          )}
+
+          <div>
+            <button
+              type="button"
+              onClick={handlePreviewLayout}
+              disabled={rendering || templateId === ""}
+              className="rounded-full border border-black/[.08] px-5 py-2 transition-colors hover:bg-black/[.04] disabled:opacity-50 dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
+            >
+              {rendering ? "Rendering…" : "Preview layout"}
+            </button>
+          </div>
+          {layoutError && <p className="text-sm text-red-600">{layoutError}</p>}
+          {layout !== null && (
+            <iframe
+              title="Report layout preview"
+              srcDoc={layout}
+              // The document is the user's own data rendered by the server;
+              // an empty sandbox keeps it from doing anything but display.
+              sandbox=""
+              className="h-96 w-full rounded border border-black/[.1] dark:border-white/[.15]"
+            />
+          )}
+        </div>
+      )}
+
+      {step === 4 && (
+        <div className="flex flex-col gap-4">
           <FormatPicker formats={formats} onChange={setFormats} />
 
           <div className="flex flex-col gap-1">
@@ -935,7 +1026,27 @@ export function ReportBuilder({
           {saveError && <p className="text-sm text-red-600">{saveError}</p>}
         </div>
       )}
-      {saved && <p className="text-sm text-green-600">Report saved</p>}
+
+      <div className="flex justify-between border-t border-black/[.1] pt-4 dark:border-white/[.15]">
+        <button
+          type="button"
+          onClick={() => setCurrentStep((s) => Math.max(1, s - 1))}
+          disabled={step === 1}
+          className={`${removeButtonClass} disabled:opacity-50`}
+        >
+          Back
+        </button>
+        {step < 4 && (
+          <button
+            type="button"
+            onClick={() => setCurrentStep((s) => Math.min(4, s + 1))}
+            disabled={step >= maxUnlocked}
+            className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
+          >
+            Next
+          </button>
+        )}
+      </div>
     </div>
   );
 }

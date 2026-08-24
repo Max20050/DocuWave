@@ -31,6 +31,7 @@ import {
   type ReportFormat,
   type ReportInput,
   type ReportTemplate,
+  type SchemaColumn,
   type TemplateConfig,
 } from "@/lib/api";
 import { QueryPreviewTable } from "@/app/ui/query-preview-table";
@@ -62,9 +63,15 @@ function hasAISummaryBlock(blocks: { kind: string }[] | undefined): boolean {
 // table's own columns for SQL sources, the sheet's header fields for Google
 // Sheets, which report an empty table.
 function columnsFor(schema: DataSourceSchema | null, table: string): string[] {
+  return columnMetaFor(schema, table).map((c) => c.name);
+}
+
+// columnMetaFor is columnsFor with each column's declared type kept alongside
+// its name, for UI that shows a type hint (Google Sheets fields have none).
+function columnMetaFor(schema: DataSourceSchema | null, table: string): SchemaColumn[] {
   if (!schema) return [];
-  if (schema.type === "google_sheets") return schema.fields ?? [];
-  return schema.tables?.find((candidate) => candidate.name === table)?.columns.map((c) => c.name) ?? [];
+  if (schema.type === "google_sheets") return (schema.fields ?? []).map((name) => ({ name, type: "" }));
+  return schema.tables?.find((candidate) => candidate.name === table)?.columns ?? [];
 }
 
 function operatorArity(operator: Operator): OperatorArity {
@@ -119,74 +126,174 @@ function FormatPicker({
   );
 }
 
-// FieldEditor builds the Fields part of a query specification: which columns
-// come back, optionally aggregated.
-function FieldEditor({
+// columnBadge shortens a schema column's declared type down to the same kind
+// of one-glyph hint the field picker shows next to each checkbox.
+function columnBadge(type: string | undefined): string {
+  const t = (type ?? "").toLowerCase();
+  if (/int|numeric|decimal|float|double|serial/.test(t)) return "123";
+  if (/date|time/.test(t)) return "\u{1F4C5}";
+  if (/bool/.test(t)) return "✓";
+  return "A";
+}
+
+// FieldPicker lists every column a table (or sheet) offers as a checkbox: on
+// for columns already in the query's field list, off otherwise. Toggling adds
+// or removes the column from that list without disturbing the position of the
+// fields that stay — reordering is FieldOrderPanel's job, not this one's.
+function FieldPicker({
+  tableLabel,
   columns,
   fields,
   onChange,
 }: {
-  columns: string[];
+  tableLabel: string;
+  columns: SchemaColumn[];
   fields: QueryField[];
   onChange: (fields: QueryField[]) => void;
 }) {
+  function toggle(column: string, checked: boolean) {
+    if (checked) {
+      if (fields.some((f) => f.column === column)) return;
+      onChange([...fields, { column, aggregate: "" }]);
+    } else {
+      onChange(fields.filter((f) => f.column !== column));
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <h3 className="text-sm font-medium">Choose what to include</h3>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Pick the columns you want in the report.
+        </p>
+      </div>
+      <div className="flex flex-col gap-1">
+        <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Fields available in: {tableLabel}
+        </p>
+        <div className="flex flex-col divide-y divide-black/[.06] rounded border border-black/[.1] dark:divide-white/[.08] dark:border-white/[.15]">
+          {columns.map((column) => {
+            const checked = fields.some((f) => f.column === column.name);
+            return (
+              <label
+                key={column.name}
+                className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-black/[.03] dark:hover:bg-[#1a1a1a]"
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={(e) => toggle(column.name, e.target.checked)}
+                />
+                <span className="flex h-5 w-6 shrink-0 items-center justify-center rounded bg-black/[.06] text-[10px] font-medium dark:bg-white/[.1]">
+                  {columnBadge(column.type)}
+                </span>
+                <span className="font-medium">{column.name}</span>
+                {column.type && (
+                  <span className="text-xs text-zinc-500 dark:text-zinc-400">{column.type}</span>
+                )}
+              </label>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// FieldOrderPanel is the "your report" side of field selection: the columns
+// already picked, in the order they'll appear, reorderable by native
+// drag-and-drop and each still able to carry an aggregate.
+function FieldOrderPanel({
+  fields,
+  onChange,
+}: {
+  fields: QueryField[];
+  onChange: (fields: QueryField[]) => void;
+}) {
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+
   function update(index: number, field: QueryField) {
     onChange(fields.map((f, i) => (i === index ? field : f)));
   }
   function remove(index: number) {
     onChange(fields.filter((_, i) => i !== index));
   }
-  function add() {
-    onChange([...fields, { column: columns[0] ?? "", aggregate: "" }]);
+  function moveTo(from: number, to: number) {
+    if (from === to) return;
+    const next = [...fields];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    onChange(next);
   }
 
   return (
-    <fieldset className="flex flex-col gap-2">
-      <legend className="text-sm font-medium">Fields</legend>
-      {fields.map((field, index) => (
-        <div key={index} className="flex items-center gap-2">
-          <select
-            value={field.aggregate === "count" ? "" : field.column}
-            onChange={(e) => update(index, { ...field, column: e.target.value })}
-            disabled={field.aggregate === "count"}
-            className={smallInputClass}
-          >
-            {field.aggregate === "count" && <option value="">(all rows)</option>}
-            {columns.map((column) => (
-              <option key={column} value={column}>
-                {column}
-              </option>
-            ))}
-          </select>
-          <select
-            value={field.aggregate ?? ""}
-            onChange={(e) => {
-              const aggregate = e.target.value as Aggregate;
-              update(index, {
-                ...field,
-                aggregate,
-                column: aggregate === "count" ? "" : field.column || columns[0] || "",
-              });
-            }}
-            className={smallInputClass}
-          >
-            {AGGREGATES.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-          <button type="button" onClick={() => remove(index)} className={removeButtonClass}>
-            Remove
-          </button>
+    <div className="flex flex-col gap-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-sm font-medium">Your report</h3>
+          <p className="text-sm text-zinc-600 dark:text-zinc-400">Drag to reorder.</p>
         </div>
-      ))}
-      <div>
-        <button type="button" onClick={add} disabled={columns.length === 0} className={removeButtonClass}>
-          Add field
-        </button>
+        {fields.length > 0 && (
+          <button type="button" onClick={() => onChange([])} className="text-xs text-red-600 hover:underline">
+            Clear all
+          </button>
+        )}
       </div>
-    </fieldset>
+      {fields.length === 0 ? (
+        <p className="rounded border border-dashed border-black/[.1] px-3 py-6 text-center text-sm text-zinc-500 dark:border-white/[.15] dark:text-zinc-400">
+          Check fields on the left to add them here.
+        </p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {fields.map((field, index) => (
+            <li
+              key={`${field.column}-${index}`}
+              draggable
+              onDragStart={() => setDragIndex(index)}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragIndex !== null) moveTo(dragIndex, index);
+                setDragIndex(null);
+              }}
+              onDragEnd={() => setDragIndex(null)}
+              className={`flex items-center gap-2 rounded border border-black/[.1] bg-black/[.02] px-2 py-2 dark:border-white/[.15] dark:bg-white/[.03] ${
+                dragIndex === index ? "opacity-50" : ""
+              }`}
+            >
+              <span className="cursor-grab select-none text-zinc-400" aria-hidden>
+                ⋮⋮
+              </span>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium">
+                {field.aggregate === "count" ? "(all rows)" : field.column}
+              </span>
+              <select
+                value={field.aggregate ?? ""}
+                onChange={(e) => {
+                  const aggregate = e.target.value as Aggregate;
+                  update(index, {
+                    ...field,
+                    aggregate,
+                    column: aggregate === "count" ? "" : field.column,
+                  });
+                }}
+                className={smallInputClass}
+              >
+                {AGGREGATES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={() => remove(index)} className={removeButtonClass}>
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 
@@ -611,7 +718,8 @@ export function ReportBuilder({
     };
   }, [token, dataSourceId]);
 
-  const columns = columnsFor(schema, spec.table ?? "");
+  const columnMeta = columnMetaFor(schema, spec.table ?? "");
+  const columns = columnMeta.map((c) => c.name);
 
   // needsAIProvider blocks saving before the request would fail: whichever
   // template is in play — the design being composed, or an already-saved one
@@ -882,7 +990,15 @@ export function ReportBuilder({
         <div className="flex flex-col gap-4">
           {columns.length > 0 && (
             <>
-              <FieldEditor columns={columns} fields={spec.fields} onChange={(fields) => setSpec({ ...spec, fields })} />
+              <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+                <FieldPicker
+                  tableLabel={schema.type === "google_sheets" ? "sheet" : spec.table ?? ""}
+                  columns={columnMeta}
+                  fields={spec.fields}
+                  onChange={(fields) => setSpec({ ...spec, fields })}
+                />
+                <FieldOrderPanel fields={spec.fields} onChange={(fields) => setSpec({ ...spec, fields })} />
+              </div>
               <FilterEditor
                 columns={columns}
                 filters={spec.filters ?? []}

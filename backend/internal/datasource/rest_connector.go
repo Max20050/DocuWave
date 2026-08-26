@@ -181,9 +181,8 @@ func resultRows(decoded any) ([]any, error) {
 }
 
 // Introspect fetches the configured response and reports the fields found on
-// its first result object, flattening nested objects to dot-notation. It's a
-// first pass: richer type inference and array-of-scalars handling land with
-// schema discovery in a follow-up.
+// its first result object, flattening nested objects to dot-notation, plus a
+// simple inferred type per field.
 func (c *restConnector) Introspect(ctx context.Context) (Schema, error) {
 	decoded, err := c.fetchJSON(ctx)
 	if err != nil {
@@ -203,7 +202,8 @@ func (c *restConnector) Introspect(ctx context.Context) (Schema, error) {
 		return Schema{}, errors.New("result rows are not JSON objects")
 	}
 
-	return Schema{Fields: flattenFields("", first)}, nil
+	fields := flattenFields("", first)
+	return Schema{Fields: fields, FieldTypes: inferFieldTypes(fields, rows)}, nil
 }
 
 // flattenFields lists an object's keys as dot-notated field names, descending
@@ -222,6 +222,66 @@ func flattenFields(prefix string, obj map[string]any) []string {
 		fields = append(fields, name)
 	}
 	return fields
+}
+
+// fieldValue navigates a decoded JSON object by a dot-notated path, the same
+// notation flattenFields produces, returning ok=false if any segment is
+// missing.
+func fieldValue(row map[string]any, path string) (any, bool) {
+	var cur any = row
+	for part := range strings.SplitSeq(path, ".") {
+		obj, ok := cur.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		cur, ok = obj[part]
+		if !ok {
+			return nil, false
+		}
+	}
+	return cur, true
+}
+
+// inferFieldTypes reports one simple type per field, taken from the first
+// non-null value found for that field across rows — a single representative
+// row might happen to have null in a field another row fills in.
+func inferFieldTypes(fields []string, rows []any) map[string]string {
+	types := make(map[string]string, len(fields))
+	for _, field := range fields {
+		typ := "unknown"
+		for _, row := range rows {
+			obj, ok := row.(map[string]any)
+			if !ok {
+				continue
+			}
+			value, ok := fieldValue(obj, field)
+			if !ok || value == nil {
+				continue
+			}
+			typ = jsonValueType(value)
+			break
+		}
+		types[field] = typ
+	}
+	return types
+}
+
+// jsonValueType names the simple type a decoded JSON value counts as.
+func jsonValueType(value any) string {
+	switch value.(type) {
+	case bool:
+		return "boolean"
+	case float64:
+		return "number"
+	case string:
+		return "string"
+	case []any:
+		return "array"
+	case map[string]any:
+		return "object"
+	default:
+		return "unknown"
+	}
 }
 
 // RunQuery is a placeholder until report execution against REST sources is

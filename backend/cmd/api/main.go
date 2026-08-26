@@ -91,6 +91,7 @@ func main() {
 	// stored picture is what report queries are built and checked against.
 	schemas := datasource.NewSchemaProvider(resolver, datasource.NewSchemaStore(pool))
 	schemaHandlers := datasource.NewSchemaHandlers(schemas)
+	fieldMappingHandlers := datasource.NewFieldMappingHandlers(datasource.NewFieldMappingStore(pool), schemas)
 
 	dsHandlers := datasource.NewHandlers(dsStore, encryptor, schemas)
 	sheetsHandlers := datasource.NewSheetsHandlers(
@@ -148,6 +149,8 @@ func main() {
 	mux.HandleFunc("DELETE /api/datasources/{id}", authHandlers.RequireAuth(dsHandlers.Delete))
 	mux.HandleFunc("GET /api/datasources/{id}/schema", authHandlers.RequireAuth(schemaHandlers.Get))
 	mux.HandleFunc("POST /api/datasources/{id}/schema/refresh", authHandlers.RequireAuth(schemaHandlers.Refresh))
+	mux.HandleFunc("GET /api/datasources/{id}/field-mapping", authHandlers.RequireAuth(fieldMappingHandlers.Get))
+	mux.HandleFunc("PUT /api/datasources/{id}/field-mapping", authHandlers.RequireAuth(fieldMappingHandlers.Put))
 	mux.HandleFunc("GET /api/datasources/google-sheets/login", sheetsHandlers.Login)
 	mux.HandleFunc("GET /api/datasources/google-sheets/callback", sheetsHandlers.Callback)
 	mux.HandleFunc("GET /api/datasources/google-sheets/connections/{id}/spreadsheets", authHandlers.RequireAuth(sheetsHandlers.ListSpreadsheets))

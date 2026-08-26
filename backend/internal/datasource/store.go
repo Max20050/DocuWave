@@ -15,7 +15,8 @@ var ErrNotFound = errors.New("data source not found")
 // DataSource is a row from the data_sources table (never carries decrypted
 // secrets). Host/Port/DBName/Username/EncryptedPassword apply to SQL sources;
 // SpreadsheetID/SpreadsheetName/GoogleConnectionID apply to Google Sheets
-// sources. Fields that don't apply to a given Type are nil.
+// sources; RestURL/RestMethod/RestHeaders/RestAuthType/RestBody apply to REST
+// API sources. Fields that don't apply to a given Type are nil.
 type DataSource struct {
 	ID                 string
 	UserID             string
@@ -28,7 +29,13 @@ type DataSource struct {
 	SpreadsheetID      *string
 	SpreadsheetName    *string
 	GoogleConnectionID *string
-	CreatedAt          time.Time
+	RestURL            *string
+	RestMethod         *string
+	// RestHeaders is the JSON-encoded []RestHeader for this source, or nil.
+	RestHeaders  *string
+	RestAuthType *string
+	RestBody     *string
+	CreatedAt    time.Time
 }
 
 // Store persists and retrieves data sources from PostgreSQL.
@@ -47,11 +54,14 @@ func (s *Store) Create(ctx context.Context, ds DataSource, encryptedPassword []b
 		`INSERT INTO data_sources (user_id, name, type, host, port, db_name, username, encrypted_password)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING id, user_id, name, type, host, port, db_name, username,
-			spreadsheet_id, spreadsheet_name, google_connection_id, created_at`,
+			spreadsheet_id, spreadsheet_name, google_connection_id,
+			rest_url, rest_method, rest_headers, rest_auth_type, rest_body, created_at`,
 		ds.UserID, ds.Name, ds.Type, ds.Host, ds.Port, ds.DBName, ds.Username, encryptedPassword,
 	).Scan(&created.ID, &created.UserID, &created.Name, &created.Type, &created.Host,
 		&created.Port, &created.DBName, &created.Username,
-		&created.SpreadsheetID, &created.SpreadsheetName, &created.GoogleConnectionID, &created.CreatedAt)
+		&created.SpreadsheetID, &created.SpreadsheetName, &created.GoogleConnectionID,
+		&created.RestURL, &created.RestMethod, &created.RestHeaders, &created.RestAuthType, &created.RestBody,
+		&created.CreatedAt)
 	if err != nil {
 		return DataSource{}, err
 	}
@@ -65,11 +75,38 @@ func (s *Store) CreateSheetsSource(ctx context.Context, ds DataSource) (DataSour
 		`INSERT INTO data_sources (user_id, name, type, spreadsheet_id, spreadsheet_name, google_connection_id)
 		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING id, user_id, name, type, host, port, db_name, username,
-			spreadsheet_id, spreadsheet_name, google_connection_id, created_at`,
+			spreadsheet_id, spreadsheet_name, google_connection_id,
+			rest_url, rest_method, rest_headers, rest_auth_type, rest_body, created_at`,
 		ds.UserID, ds.Name, ds.Type, ds.SpreadsheetID, ds.SpreadsheetName, ds.GoogleConnectionID,
 	).Scan(&created.ID, &created.UserID, &created.Name, &created.Type, &created.Host,
 		&created.Port, &created.DBName, &created.Username,
-		&created.SpreadsheetID, &created.SpreadsheetName, &created.GoogleConnectionID, &created.CreatedAt)
+		&created.SpreadsheetID, &created.SpreadsheetName, &created.GoogleConnectionID,
+		&created.RestURL, &created.RestMethod, &created.RestHeaders, &created.RestAuthType, &created.RestBody,
+		&created.CreatedAt)
+	if err != nil {
+		return DataSource{}, err
+	}
+	return created, nil
+}
+
+// CreateRestSource inserts a new REST API data source with an
+// already-encrypted auth config, returning the saved row.
+func (s *Store) CreateRestSource(ctx context.Context, ds DataSource, encryptedAuthConfig []byte) (DataSource, error) {
+	var created DataSource
+	err := s.pool.QueryRow(ctx,
+		`INSERT INTO data_sources (user_id, name, type, rest_url, rest_method, rest_headers,
+			rest_auth_type, rest_encrypted_auth_config, rest_body)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING id, user_id, name, type, host, port, db_name, username,
+			spreadsheet_id, spreadsheet_name, google_connection_id,
+			rest_url, rest_method, rest_headers, rest_auth_type, rest_body, created_at`,
+		ds.UserID, ds.Name, ds.Type, ds.RestURL, ds.RestMethod, ds.RestHeaders,
+		ds.RestAuthType, encryptedAuthConfig, ds.RestBody,
+	).Scan(&created.ID, &created.UserID, &created.Name, &created.Type, &created.Host,
+		&created.Port, &created.DBName, &created.Username,
+		&created.SpreadsheetID, &created.SpreadsheetName, &created.GoogleConnectionID,
+		&created.RestURL, &created.RestMethod, &created.RestHeaders, &created.RestAuthType, &created.RestBody,
+		&created.CreatedAt)
 	if err != nil {
 		return DataSource{}, err
 	}
@@ -80,7 +117,8 @@ func (s *Store) CreateSheetsSource(ctx context.Context, ds DataSource) (DataSour
 func (s *Store) List(ctx context.Context, userID string) ([]DataSource, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, user_id, name, type, host, port, db_name, username,
-			spreadsheet_id, spreadsheet_name, google_connection_id, created_at
+			spreadsheet_id, spreadsheet_name, google_connection_id,
+			rest_url, rest_method, rest_headers, rest_auth_type, rest_body, created_at
 		 FROM data_sources WHERE user_id = $1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -92,7 +130,9 @@ func (s *Store) List(ctx context.Context, userID string) ([]DataSource, error) {
 		var ds DataSource
 		if err := rows.Scan(&ds.ID, &ds.UserID, &ds.Name, &ds.Type, &ds.Host,
 			&ds.Port, &ds.DBName, &ds.Username,
-			&ds.SpreadsheetID, &ds.SpreadsheetName, &ds.GoogleConnectionID, &ds.CreatedAt); err != nil {
+			&ds.SpreadsheetID, &ds.SpreadsheetName, &ds.GoogleConnectionID,
+			&ds.RestURL, &ds.RestMethod, &ds.RestHeaders, &ds.RestAuthType, &ds.RestBody,
+			&ds.CreatedAt); err != nil {
 			return nil, err
 		}
 		sources = append(sources, ds)
@@ -101,25 +141,29 @@ func (s *Store) List(ctx context.Context, userID string) ([]DataSource, error) {
 }
 
 // Get returns a data source owned by the given user, along with its
-// still-encrypted password (nil for source types that don't use one). It
-// returns ErrNotFound if no row matched.
-func (s *Store) Get(ctx context.Context, userID, id string) (DataSource, []byte, error) {
+// still-encrypted SQL password and REST auth config (nil for source types
+// that don't use them). It returns ErrNotFound if no row matched.
+func (s *Store) Get(ctx context.Context, userID, id string) (DataSource, []byte, []byte, error) {
 	var ds DataSource
-	var encryptedPassword []byte
+	var encryptedPassword, encryptedAuthConfig []byte
 	err := s.pool.QueryRow(ctx,
 		`SELECT id, user_id, name, type, host, port, db_name, username,
-			spreadsheet_id, spreadsheet_name, google_connection_id, created_at, encrypted_password
+			spreadsheet_id, spreadsheet_name, google_connection_id,
+			rest_url, rest_method, rest_headers, rest_auth_type, rest_body, created_at,
+			encrypted_password, rest_encrypted_auth_config
 		 FROM data_sources WHERE id = $1 AND user_id = $2`, id, userID,
 	).Scan(&ds.ID, &ds.UserID, &ds.Name, &ds.Type, &ds.Host,
 		&ds.Port, &ds.DBName, &ds.Username,
-		&ds.SpreadsheetID, &ds.SpreadsheetName, &ds.GoogleConnectionID, &ds.CreatedAt, &encryptedPassword)
+		&ds.SpreadsheetID, &ds.SpreadsheetName, &ds.GoogleConnectionID,
+		&ds.RestURL, &ds.RestMethod, &ds.RestHeaders, &ds.RestAuthType, &ds.RestBody, &ds.CreatedAt,
+		&encryptedPassword, &encryptedAuthConfig)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return DataSource{}, nil, ErrNotFound
+			return DataSource{}, nil, nil, ErrNotFound
 		}
-		return DataSource{}, nil, err
+		return DataSource{}, nil, nil, err
 	}
-	return ds, encryptedPassword, nil
+	return ds, encryptedPassword, encryptedAuthConfig, nil
 }
 
 // Delete removes a data source owned by the given user. It returns ErrNotFound if no row matched.

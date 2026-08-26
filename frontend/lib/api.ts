@@ -207,6 +207,46 @@ export async function refreshDataSourceSchema(
   return response.json();
 }
 
+// SystemField is one of DocuWave's predefined fields a data source's
+// detected fields can be mapped onto. Mirrors backend/internal/datasource's
+// SystemFields.
+export type SystemField = {
+  key: string;
+  label: string;
+};
+
+export type FieldMapping = {
+  dataSourceId: string;
+  // Keyed by the detected api_field, valued by the system field's key.
+  mapping: Record<string, string>;
+  systemFields: SystemField[];
+  updatedAt?: string;
+};
+
+export async function getFieldMapping(token: string, id: string): Promise<FieldMapping> {
+  const response = await authFetch(`/api/datasources/${id}/field-mapping`, token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function saveFieldMapping(
+  token: string,
+  id: string,
+  mapping: Record<string, string>,
+): Promise<FieldMapping> {
+  const response = await authFetch(`/api/datasources/${id}/field-mapping`, token, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mapping }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
 export function googleSheetsConnectUrl(token: string): string {
   return `${API_URL}/api/datasources/google-sheets/login?token=${encodeURIComponent(token)}`;
 }

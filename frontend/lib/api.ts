@@ -60,7 +60,20 @@ export async function authFetch(
   return response;
 }
 
-export type DataSourceType = "postgres" | "mysql" | "google_sheets";
+export type DataSourceType = "postgres" | "mysql" | "google_sheets" | "rest_api";
+
+export type RestHeader = {
+  key: string;
+  value: string;
+};
+
+export type RestAuthType = "none" | "basic" | "bearer" | "api_key";
+
+export type RestAuthInput =
+  | { type: "none" }
+  | { type: "basic"; username: string; password: string }
+  | { type: "bearer"; token: string }
+  | { type: "api_key"; headerName: string; headerValue: string };
 
 export type DataSource = {
   id: string;
@@ -72,6 +85,10 @@ export type DataSource = {
   username?: string;
   spreadsheetId?: string;
   spreadsheetName?: string;
+  url?: string;
+  method?: string;
+  headers?: RestHeader[];
+  authType?: RestAuthType;
   createdAt: string;
 };
 
@@ -83,6 +100,15 @@ export type DataSourceInput = {
   dbName: string;
   username: string;
   password: string;
+};
+
+export type RestApiDataSourceInput = {
+  name: string;
+  url: string;
+  method: string;
+  headers: RestHeader[];
+  auth: RestAuthInput;
+  body?: string;
 };
 
 export type GoogleSheetsSpreadsheet = {
@@ -145,7 +171,8 @@ export type SchemaTable = {
   columns: SchemaColumn[];
 };
 
-// SQL sources report `tables`; Google Sheets sources report `fields` (the header row).
+// SQL sources report `tables`; Google Sheets and REST API sources report
+// `fields` (the header row, or the detected response fields).
 export type DataSourceSchema = {
   dataSourceId: string;
   type: DataSourceType;
@@ -187,6 +214,32 @@ export async function createGoogleSheetsDataSource(
   input: GoogleSheetsDataSourceInput,
 ): Promise<DataSource> {
   const response = await authFetch("/api/datasources/google-sheets", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function testRestApiDataSource(token: string, input: RestApiDataSourceInput): Promise<void> {
+  const response = await authFetch("/api/datasources/rest-api/test", token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+}
+
+export async function createRestApiDataSource(
+  token: string,
+  input: RestApiDataSourceInput,
+): Promise<DataSource> {
+  const response = await authFetch("/api/datasources/rest-api", token, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),

@@ -5,22 +5,29 @@ import { useRouter, useSearchParams } from "next/navigation";
 import {
   createDataSource,
   createGoogleSheetsDataSource,
+  createRestApiDataSource,
   deleteDataSource,
   listDataSources,
   testDataSource,
+  testRestApiDataSource,
   type DataSource,
   type DataSourceInput,
   type GoogleSheetsDataSourceInput,
+  type RestApiDataSourceInput,
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { DataSourceForm } from "@/app/ui/data-source-form";
 import { GoogleSheetsConnectButton } from "@/app/ui/google-sheets-connect-button";
 import { GoogleSheetsPicker } from "@/app/ui/google-sheets-picker";
 import { DataSourceSchemaView } from "@/app/ui/data-source-schema";
+import { RestApiDataSourceForm } from "@/app/ui/rest-api-datasource-form";
 
 function sourceSubtitle(source: DataSource): string {
   if (source.type === "google_sheets") {
     return `Google Sheets · ${source.spreadsheetName ?? source.spreadsheetId}`;
+  }
+  if (source.type === "rest_api") {
+    return `REST API · ${source.method ?? "GET"} ${source.url}`;
   }
   return `${source.type} · ${source.host}:${source.port}/${source.dbName}`;
 }
@@ -60,6 +67,17 @@ function DataSourcesContent() {
     await createGoogleSheetsDataSource(token, input);
     setSources(await listDataSources(token));
     router.replace("/datasources");
+  }
+
+  async function handleTestRest(input: RestApiDataSourceInput) {
+    if (!token) return;
+    await testRestApiDataSource(token, input);
+  }
+
+  async function handleCreateRest(input: RestApiDataSourceInput) {
+    if (!token) return;
+    await createRestApiDataSource(token, input);
+    setSources(await listDataSources(token));
   }
 
   async function handleDelete(id: string) {
@@ -141,6 +159,11 @@ function DataSourcesContent() {
       <div className="flex w-full max-w-md flex-col gap-4 border-t border-black/[.1] pt-8 dark:border-white/[.15]">
         <h2 className="text-lg font-semibold">Add a SQL data source</h2>
         <DataSourceForm onTest={handleTest} onCreate={handleCreate} />
+      </div>
+
+      <div className="flex w-full max-w-md flex-col gap-4 border-t border-black/[.1] pt-8 dark:border-white/[.15]">
+        <h2 className="text-lg font-semibold">Add a REST API data source</h2>
+        <RestApiDataSourceForm onTest={handleTestRest} onCreate={handleCreateRest} />
       </div>
     </div>
   );

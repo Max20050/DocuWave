@@ -48,6 +48,11 @@ var SupportedTypes = []string{"postgres", "mysql"}
 // rather than a ConnectionConfig.
 const sheetsSourceType = "google_sheets"
 
+// restSourceType identifies stored REST API sources. Like Sheets, they're not
+// in connectorRegistry: their connector is built from a URL/headers/auth
+// configuration rather than a ConnectionConfig.
+const restSourceType = "rest_api"
+
 // NewConnector builds a Connector for the given source type.
 func NewConnector(sourceType string, cfg ConnectionConfig) (Connector, error) {
 	factory, ok := connectorRegistry[sourceType]

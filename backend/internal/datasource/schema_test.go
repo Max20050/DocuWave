@@ -14,6 +14,7 @@ var (
 	_ Connector = (*postgresConnector)(nil)
 	_ Connector = (*mysqlConnector)(nil)
 	_ Connector = (*googleSheetsConnector)(nil)
+	_ Connector = (*restConnector)(nil)
 )
 
 func TestGroupColumnsGroupsRowsInOrder(t *testing.T) {

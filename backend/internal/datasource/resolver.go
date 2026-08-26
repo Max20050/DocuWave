@@ -2,6 +2,7 @@ package datasource
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 )
 
@@ -28,12 +29,12 @@ func NewResolver(store *Store, connections *SheetsStore, encryptor *Encryptor, s
 // Resolve loads a data source owned by the user and returns it alongside a
 // Connector for it. It returns ErrNotFound when the user owns no such source.
 func (r *Resolver) Resolve(ctx context.Context, userID, dataSourceID string) (DataSource, Connector, error) {
-	ds, encryptedPassword, err := r.store.Get(ctx, userID, dataSourceID)
+	ds, encryptedPassword, encryptedAuthConfig, err := r.store.Get(ctx, userID, dataSourceID)
 	if err != nil {
 		return DataSource{}, nil, err
 	}
 
-	connector, err := r.connectorFor(ctx, userID, ds, encryptedPassword)
+	connector, err := r.connectorFor(ctx, userID, ds, encryptedPassword, encryptedAuthConfig)
 	if err != nil {
 		return DataSource{}, nil, err
 	}
@@ -42,8 +43,9 @@ func (r *Resolver) Resolve(ctx context.Context, userID, dataSourceID string) (Da
 
 // connectorFor builds a Connector for a loaded data source, decrypting
 // whichever credential that source type uses.
-func (r *Resolver) connectorFor(ctx context.Context, userID string, ds DataSource, encryptedPassword []byte) (Connector, error) {
-	if ds.Type == sheetsSourceType {
+func (r *Resolver) connectorFor(ctx context.Context, userID string, ds DataSource, encryptedPassword, encryptedAuthConfig []byte) (Connector, error) {
+	switch ds.Type {
+	case sheetsSourceType:
 		if ds.GoogleConnectionID == nil {
 			return nil, errors.New("google sheets data source has no connection")
 		}
@@ -56,17 +58,62 @@ func (r *Resolver) connectorFor(ctx context.Context, userID string, ds DataSourc
 			token:         token,
 			spreadsheetID: deref(ds.SpreadsheetID),
 		}, nil
+
+	case restSourceType:
+		return restConnectorFor(r.encryptor, ds, encryptedAuthConfig)
+
+	default:
+		password, err := r.encryptor.Decrypt(encryptedPassword)
+		if err != nil {
+			return nil, err
+		}
+		return NewConnector(ds.Type, ConnectionConfig{
+			Host:     deref(ds.Host),
+			Port:     deref(ds.Port),
+			DBName:   deref(ds.DBName),
+			Username: deref(ds.Username),
+			Password: password,
+		})
+	}
+}
+
+// restConnectorFor rebuilds a restConnector from a stored REST API data
+// source, decrypting its auth config.
+func restConnectorFor(encryptor *Encryptor, ds DataSource, encryptedAuthConfig []byte) (Connector, error) {
+	var auth restAuthConfig
+	if encryptedAuthConfig != nil {
+		decrypted, err := encryptor.Decrypt(encryptedAuthConfig)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(decrypted), &auth); err != nil {
+			return nil, err
+		}
 	}
 
-	password, err := r.encryptor.Decrypt(encryptedPassword)
+	headers, err := decodeRestHeaders(ds.RestHeaders)
 	if err != nil {
 		return nil, err
 	}
-	return NewConnector(ds.Type, ConnectionConfig{
-		Host:     deref(ds.Host),
-		Port:     deref(ds.Port),
-		DBName:   deref(ds.DBName),
-		Username: deref(ds.Username),
-		Password: password,
-	})
+
+	return &restConnector{
+		url:     deref(ds.RestURL),
+		method:  deref(ds.RestMethod),
+		headers: headers,
+		auth:    auth,
+		body:    deref(ds.RestBody),
+	}, nil
+}
+
+// decodeRestHeaders parses a data source's stored JSON header list, treating
+// a nil/empty value as no headers rather than an error.
+func decodeRestHeaders(raw *string) ([]RestHeader, error) {
+	if raw == nil || *raw == "" {
+		return nil, nil
+	}
+	var headers []RestHeader
+	if err := json.Unmarshal([]byte(*raw), &headers); err != nil {
+		return nil, err
+	}
+	return headers, nil
 }

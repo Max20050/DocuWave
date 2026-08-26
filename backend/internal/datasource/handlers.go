@@ -75,19 +75,27 @@ func (r dataSourceRequest) missingField() string {
 }
 
 type dataSourceResponse struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	Type            string  `json:"type"`
-	Host            *string `json:"host,omitempty"`
-	Port            *int    `json:"port,omitempty"`
-	DBName          *string `json:"dbName,omitempty"`
-	Username        *string `json:"username,omitempty"`
-	SpreadsheetID   *string `json:"spreadsheetId,omitempty"`
-	SpreadsheetName *string `json:"spreadsheetName,omitempty"`
-	CreatedAt       string  `json:"createdAt"`
+	ID              string       `json:"id"`
+	Name            string       `json:"name"`
+	Type            string       `json:"type"`
+	Host            *string      `json:"host,omitempty"`
+	Port            *int         `json:"port,omitempty"`
+	DBName          *string      `json:"dbName,omitempty"`
+	Username        *string      `json:"username,omitempty"`
+	SpreadsheetID   *string      `json:"spreadsheetId,omitempty"`
+	SpreadsheetName *string      `json:"spreadsheetName,omitempty"`
+	URL             *string      `json:"url,omitempty"`
+	Method          *string      `json:"method,omitempty"`
+	Headers         []RestHeader `json:"headers,omitempty"`
+	AuthType        *string      `json:"authType,omitempty"`
+	CreatedAt       string       `json:"createdAt"`
 }
 
 func toResponse(ds DataSource) dataSourceResponse {
+	// Secrets (the SQL password, the REST auth config) never leave the
+	// package: encrypted_password and rest_encrypted_auth_config aren't
+	// scanned into DataSource in the first place.
+	headers, _ := decodeRestHeaders(ds.RestHeaders)
 	return dataSourceResponse{
 		ID:              ds.ID,
 		Name:            ds.Name,
@@ -98,6 +106,10 @@ func toResponse(ds DataSource) dataSourceResponse {
 		Username:        ds.Username,
 		SpreadsheetID:   ds.SpreadsheetID,
 		SpreadsheetName: ds.SpreadsheetName,
+		URL:             ds.RestURL,
+		Method:          ds.RestMethod,
+		Headers:         headers,
+		AuthType:        ds.RestAuthType,
 		CreatedAt:       ds.CreatedAt.Format(time.RFC3339),
 	}
 }

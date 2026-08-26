@@ -34,14 +34,7 @@ type restAuthRequest struct {
 }
 
 func (r restAuthRequest) toConfig() restAuthConfig {
-	return restAuthConfig{
-		Type:        r.Type,
-		Username:    r.Username,
-		Password:    r.Password,
-		Token:       r.Token,
-		HeaderName:  r.HeaderName,
-		HeaderValue: r.HeaderValue,
-	}
+	return restAuthConfig(r)
 }
 
 type restDataSourceRequest struct {

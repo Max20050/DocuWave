@@ -100,7 +100,7 @@ func TestRestAuthConfigValidate(t *testing.T) {
 func TestRestConnectorIntrospectFlatObjectAtRoot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"id": 1, "name": "north"}`))
+		_, _ = w.Write([]byte(`{"id": 1, "name": "north"}`))
 	}))
 	defer server.Close()
 
@@ -118,7 +118,7 @@ func TestRestConnectorIntrospectFlatObjectAtRoot(t *testing.T) {
 func TestRestConnectorIntrospectArrayAtRoot(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"id": 1, "region": "north"}, {"id": 2, "region": "south"}]`))
+		_, _ = w.Write([]byte(`[{"id": 1, "region": "north"}, {"id": 2, "region": "south"}]`))
 	}))
 	defer server.Close()
 
@@ -136,7 +136,7 @@ func TestRestConnectorIntrospectArrayAtRoot(t *testing.T) {
 func TestRestConnectorIntrospectArrayNestedUnderKey(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"data": [{"id": 1, "region": "north"}]}`))
+		_, _ = w.Write([]byte(`{"data": [{"id": 1, "region": "north"}]}`))
 	}))
 	defer server.Close()
 
@@ -154,7 +154,7 @@ func TestRestConnectorIntrospectArrayNestedUnderKey(t *testing.T) {
 func TestRestConnectorIntrospectFlattensNestedObjects(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`[{"id": 1, "address": {"city": "NYC", "zip": "10001"}}]`))
+		_, _ = w.Write([]byte(`[{"id": 1, "address": {"city": "NYC", "zip": "10001"}}]`))
 	}))
 	defer server.Close()
 

@@ -178,6 +178,9 @@ export type DataSourceSchema = {
   type: DataSourceType;
   tables?: SchemaTable[];
   fields?: string[];
+  // fieldTypes is a simple inferred type (string/number/boolean/array/object)
+  // per field, keyed by field name. Only REST API sources fill this in.
+  fieldTypes?: Record<string, string>;
 };
 
 export async function getDataSourceSchema(
@@ -185,6 +188,19 @@ export async function getDataSourceSchema(
   id: string,
 ): Promise<DataSourceSchema> {
   const response = await authFetch(`/api/datasources/${id}/schema`, token);
+  if (!response.ok) {
+    throw new ApiError(response.status, await parseErrorMessage(response));
+  }
+  return response.json();
+}
+
+export async function refreshDataSourceSchema(
+  token: string,
+  id: string,
+): Promise<DataSourceSchema> {
+  const response = await authFetch(`/api/datasources/${id}/schema/refresh`, token, {
+    method: "POST",
+  });
   if (!response.ok) {
     throw new ApiError(response.status, await parseErrorMessage(response));
   }

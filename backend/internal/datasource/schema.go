@@ -3,11 +3,14 @@ package datasource
 import "strings"
 
 // Schema describes the structure of a data source. SQL sources fill Tables;
-// Google Sheets sources fill Fields with the header row of the sheet. Query
-// generation reads this to know what it's allowed to ask for.
+// Google Sheets sources fill Fields with the header row of the sheet; REST API
+// sources fill both Fields and FieldTypes, the latter with a simple inferred
+// type (string/number/boolean/array/object) per field. Query generation reads
+// this to know what it's allowed to ask for.
 type Schema struct {
-	Tables []Table  `json:"tables,omitempty"`
-	Fields []string `json:"fields,omitempty"`
+	Tables     []Table           `json:"tables,omitempty"`
+	Fields     []string          `json:"fields,omitempty"`
+	FieldTypes map[string]string `json:"fieldTypes,omitempty"`
 }
 
 // Table is a single table (or view) exposed by a SQL data source.

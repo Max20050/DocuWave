@@ -134,7 +134,12 @@ function DataSourcesContent() {
             </div>
             {selectedId === source.id && (
               <div className="border-t border-black/[.1] pt-3 dark:border-white/[.15]">
-                <DataSourceSchemaView key={source.id} token={token} dataSourceId={source.id} />
+                <DataSourceSchemaView
+                  key={source.id}
+                  token={token}
+                  dataSourceId={source.id}
+                  type={source.type}
+                />
               </div>
             )}
           </div>

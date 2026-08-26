@@ -151,6 +151,50 @@ func TestRestConnectorIntrospectArrayNestedUnderKey(t *testing.T) {
 	}
 }
 
+func TestRestConnectorIntrospectInfersFieldTypes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"id": 1, "region": "north", "active": true, "score": 4.5, "tags": ["a", "b"], "note": null},
+			{"id": 2, "region": "south", "active": false, "score": 1, "tags": ["c"], "note": "late"}
+		]`))
+	}))
+	defer server.Close()
+
+	got, err := (&restConnector{url: server.URL}).Introspect(context.Background())
+	if err != nil {
+		t.Fatalf("Introspect returned error: %v", err)
+	}
+
+	want := map[string]string{
+		"id":     "number",
+		"region": "string",
+		"active": "boolean",
+		"score":  "number",
+		"tags":   "array",
+		"note":   "string",
+	}
+	if !reflect.DeepEqual(got.FieldTypes, want) {
+		t.Errorf("got %#v, want %#v", got.FieldTypes, want)
+	}
+}
+
+func TestRestConnectorIntrospectArrayRootIsRepresentativeRow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"id": 1, "region": "north"}, {"id": 2, "region": "south"}]`))
+	}))
+	defer server.Close()
+
+	got, err := (&restConnector{url: server.URL}).Introspect(context.Background())
+	if err != nil {
+		t.Fatalf("Introspect returned error: %v", err)
+	}
+	if len(got.Fields) != 2 {
+		t.Errorf("got %d fields, want 2 (one per key, not one per array element)", len(got.Fields))
+	}
+}
+
 func TestRestConnectorIntrospectFlattensNestedObjects(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

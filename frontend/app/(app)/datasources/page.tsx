@@ -115,12 +115,12 @@ function DataSourcesContent() {
             key={source.id}
             className="flex flex-col gap-3 rounded border border-black/[.1] px-4 py-3 dark:border-white/[.15]"
           >
-            <div className="flex items-center justify-between">
-              <div>
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
                 <p className="font-medium">{source.name}</p>
-                <p className="text-sm text-zinc-600 dark:text-zinc-400">{sourceSubtitle(source)}</p>
+                <p className="break-words text-sm text-zinc-600 dark:text-zinc-400">{sourceSubtitle(source)}</p>
               </div>
-              <div className="flex items-center gap-4">
+              <div className="flex shrink-0 items-center gap-4">
                 <button
                   onClick={() => setSelectedId(selectedId === source.id ? null : source.id)}
                   className="text-sm underline"

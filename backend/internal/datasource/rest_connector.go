@@ -81,6 +81,10 @@ type restConnector struct {
 	headers []RestHeader
 	auth    restAuthConfig
 	body    string
+	// mapping is this source's stored api_field -> our_field mapping (see
+	// FieldMappingStore). It's nil/empty for a connector built where no
+	// mapping is needed (TestConnection, Introspect) — only RunQuery uses it.
+	mapping map[string]string
 }
 
 // buildRequest assembles the configured HTTP request, applying headers and
@@ -284,9 +288,90 @@ func jsonValueType(value any) string {
 	}
 }
 
-// RunQuery is a placeholder until report execution against REST sources is
-// implemented (see issue #42): there's no compiled query language for this
-// source type yet.
+// restQueryPlan mirrors query.restPlan's JSON shape — the compiled form of a
+// REST spec: which mapped (our_field) fields to select, in order. Duplicated
+// here rather than imported because backend/internal/query already imports
+// this package (to validate specs against a Schema), so the reverse import
+// would cycle; only the wire shape needs to be shared.
+type restQueryPlan struct {
+	Fields []string `json:"fields"`
+}
+
+// RunQuery executes the configured request, decodes its JSON response, and
+// remaps each result row's api_field keys to their mapped our_field name
+// using the source's stored field mapping (see FieldMappingStore) — keeping
+// only the fields the compiled plan selected, in that order.
+//
+// Every plan field is required to have a mapped api_field: report.Runner
+// builds the schema a spec is validated against from this same mapping, so
+// under normal use every field reaching here is already covered. This is
+// still checked explicitly (rather than trusted) so a mapping edited after a
+// report was built fails loudly instead of silently returning an empty or
+// partial row — never silent empty data.
+//
+// REST sources support only "select and reorder already-mapped fields" (see
+// query.compileREST): the plan carries no filters, sorts, or aggregates.
+// Pagination is out of scope — this fetches the configured response once;
+// a source whose data spans multiple pages only returns its first page,
+// which is a known limitation rather than an oversight.
 func (c *restConnector) RunQuery(ctx context.Context, query string, args []any, limit int) (QueryResult, error) {
-	return QueryResult{}, errors.New("running queries against REST API sources isn't supported yet")
+	if len(args) > 0 {
+		return QueryResult{}, errors.New("rest api queries cannot take bound values")
+	}
+
+	var plan restQueryPlan
+	if err := json.Unmarshal([]byte(query), &plan); err != nil {
+		return QueryResult{}, fmt.Errorf("decode rest query plan: %w", err)
+	}
+	if len(plan.Fields) == 0 {
+		return QueryResult{}, errors.New("rest api query selects no fields")
+	}
+
+	// ourToAPI inverts the stored api_field -> our_field mapping, since the
+	// plan names fields by their mapped our_field name.
+	ourToAPI := make(map[string]string, len(c.mapping))
+	for apiField, ourField := range c.mapping {
+		ourToAPI[ourField] = apiField
+	}
+
+	for _, field := range plan.Fields {
+		if _, ok := ourToAPI[field]; !ok {
+			return QueryResult{}, fmt.Errorf(
+				"field %q has no mapped API field — map it in the data source's field mapping before running this report", field)
+		}
+	}
+
+	decoded, err := c.fetchJSON(ctx)
+	if err != nil {
+		return QueryResult{}, err
+	}
+	rows, err := resultRows(decoded)
+	if err != nil {
+		return QueryResult{}, err
+	}
+
+	result := QueryResult{Columns: plan.Fields, Rows: make([][]any, 0, len(rows))}
+	for _, raw := range rows {
+		if len(result.Rows) == limit {
+			result.Truncated = true
+			break
+		}
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			return QueryResult{}, errors.New("result rows are not JSON objects")
+		}
+
+		row := make([]any, len(plan.Fields))
+		for i, field := range plan.Fields {
+			value, ok := fieldValue(obj, ourToAPI[field])
+			if !ok {
+				row[i] = nil
+				continue
+			}
+			row[i] = value
+		}
+		result.Rows = append(result.Rows, row)
+	}
+
+	return result, nil
 }

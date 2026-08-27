@@ -27,6 +27,8 @@ func Compile(spec Spec, schema datasource.Schema, dialect Dialect, now time.Time
 		return compileSQL(res, mysqlSyntax)
 	case DialectSheets:
 		return compileSheets(res)
+	case DialectREST:
+		return compileREST(res)
 	default:
 		return Compiled{}, fmt.Errorf("%w: %s", ErrUnsupportedSource, dialect)
 	}

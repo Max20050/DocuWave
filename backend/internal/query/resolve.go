@@ -154,6 +154,22 @@ func columnsFor(spec Spec, schema datasource.Schema, dialect Dialect) ([]resolve
 		return columns, "", nil
 	}
 
+	if dialect == DialectREST {
+		// A REST source has no table, and its selectable columns are the
+		// mapped system-field names the caller (report.Runner.prepare)
+		// already reduced schema.Fields to — not the raw api_field names
+		// Introspect reports. Index is meaningless here: RunQuery works by
+		// field name, not position, unlike Sheets.
+		if len(schema.Fields) == 0 {
+			return nil, "", fmt.Errorf("%w: this data source has no mapped fields — map its fields first", ErrInvalidSpec)
+		}
+		columns := make([]resolvedColumn, 0, len(schema.Fields))
+		for i, field := range schema.Fields {
+			columns = append(columns, resolvedColumn{Name: field, Index: i})
+		}
+		return columns, "", nil
+	}
+
 	if spec.Table == "" {
 		return nil, "", fmt.Errorf("%w: choose a table", ErrInvalidSpec)
 	}

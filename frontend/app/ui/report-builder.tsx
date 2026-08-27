@@ -9,6 +9,7 @@ import {
   createCustomTemplate,
   emptyQuerySpec,
   getDataSourceSchema,
+  getFieldMapping,
   getLLMConfig,
   listArchivedReportTemplates,
   listReportTemplates,
@@ -19,6 +20,7 @@ import {
   type Aggregate,
   type DataSource,
   type DataSourceSchema,
+  type FieldMapping,
   type LLMConfig,
   type Operator,
   type OperatorArity,
@@ -35,6 +37,7 @@ import {
   type TemplateConfig,
 } from "@/lib/api";
 import { QueryPreviewTable } from "@/app/ui/query-preview-table";
+import { DataSourceFieldMappingPanel } from "@/app/ui/data-source-field-mapping";
 import {
   TemplatePicker,
   defaultTemplateConfig,
@@ -59,18 +62,38 @@ function hasAISummaryBlock(blocks: { kind: string }[] | undefined): boolean {
   return (blocks ?? []).some((b) => b.kind === "ai-summary");
 }
 
-// columnsFor reads the columns a data source's schema makes available: a
-// table's own columns for SQL sources, the sheet's header fields for Google
-// Sheets, which report an empty table.
-function columnsFor(schema: DataSourceSchema | null, table: string): string[] {
-  return columnMetaFor(schema, table).map((c) => c.name);
-}
-
-// columnMetaFor is columnsFor with each column's declared type kept alongside
-// its name, for UI that shows a type hint (Google Sheets fields have none).
-function columnMetaFor(schema: DataSourceSchema | null, table: string): SchemaColumn[] {
+// columnMetaFor reads the columns a data source's schema makes available,
+// each with its declared type kept alongside its name for UI that shows a
+// type hint (Google Sheets and REST fields have none): a table's own columns
+// for SQL sources, the sheet's header fields for Google Sheets (which report
+// an empty table), and a REST source's currently-mapped system fields.
+//
+// For a REST source, the offered columns aren't the raw api_field names
+// Introspect reports — they're the distinct our_field (system field) names
+// the source's stored mapping currently points at, matching what the backend
+// compiles a REST spec's fields against (see report.Runner.mappedRESTSchema).
+// `name` stays the raw system-field key FieldPicker/FieldOrderPanel and the
+// backend expect in QueryField.column; only the label shown is prettified via
+// the mapping response's systemFields catalog.
+function columnMetaFor(
+  schema: DataSourceSchema | null,
+  table: string,
+  fieldMapping: FieldMapping | null,
+): SchemaColumn[] {
   if (!schema) return [];
   if (schema.type === "google_sheets") return (schema.fields ?? []).map((name) => ({ name, type: "" }));
+  if (schema.type === "rest_api") {
+    if (!fieldMapping) return [];
+    const labelFor = new Map(fieldMapping.systemFields.map((f) => [f.key, f.label]));
+    const seen = new Set<string>();
+    const columns: SchemaColumn[] = [];
+    for (const ourField of Object.values(fieldMapping.mapping)) {
+      if (seen.has(ourField)) continue;
+      seen.add(ourField);
+      columns.push({ name: ourField, type: labelFor.get(ourField) ?? "" });
+    }
+    return columns;
+  }
   return schema.tables?.find((candidate) => candidate.name === table)?.columns ?? [];
 }
 
@@ -638,6 +661,11 @@ export function ReportBuilder({
   const [dataSourceId, setDataSourceId] = useState(sources[0]?.id ?? "");
   const [schema, setSchema] = useState<DataSourceSchema | null>(null);
   const [schemaError, setSchemaError] = useState<string | null>(null);
+  // fieldMapping is only meaningful (and only fetched) for a rest_api source:
+  // it's what turns raw api_field names into the system-field columns the
+  // Data step offers, per columnMetaFor.
+  const [fieldMapping, setFieldMapping] = useState<FieldMapping | null>(null);
+  const [fieldMappingError, setFieldMappingError] = useState<string | null>(null);
   const [spec, setSpec] = useState<QuerySpec>(emptyQuerySpec());
   const [prompt, setPrompt] = useState("");
   const [preview, setPreview] = useState<QueryPreview | null>(null);
@@ -718,7 +746,27 @@ export function ReportBuilder({
     };
   }, [token, dataSourceId]);
 
-  const columnMeta = columnMetaFor(schema, spec.table ?? "");
+  // The field mapping is only relevant once the schema confirms this is a
+  // rest_api source — fetching it earlier would race the schema fetch and
+  // fetching it for other source types would be wasted work. handleSourceChange
+  // already clears fieldMapping on every source change, so there's nothing to
+  // reset here when the type turns out not to be rest_api.
+  useEffect(() => {
+    if (!dataSourceId || schema?.type !== "rest_api") return;
+    let active = true;
+    getFieldMapping(token, dataSourceId)
+      .then((result) => {
+        if (active) setFieldMapping(result);
+      })
+      .catch((err) => {
+        if (active) setFieldMappingError(errorMessage(err, "Failed to load the field mapping"));
+      });
+    return () => {
+      active = false;
+    };
+  }, [token, dataSourceId, schema?.type]);
+
+  const columnMeta = columnMetaFor(schema, spec.table ?? "", fieldMapping);
   const columns = columnMeta.map((c) => c.name);
 
   // needsAIProvider blocks saving before the request would fail: whichever
@@ -733,7 +781,9 @@ export function ReportBuilder({
   // querying it, a preview must succeed before picking a template, and a
   // template must be picked before publishing. maxUnlocked is the furthest
   // step reachable given what's true right now.
-  const step1Valid = schema !== null && (schema.type === "google_sheets" || (spec.table ?? "") !== "");
+  const step1Valid =
+    schema !== null &&
+    (schema.type === "google_sheets" || schema.type === "rest_api" || (spec.table ?? "") !== "");
   const step2Valid = step1Valid && preview !== null;
   const step3Valid = step2Valid && templateId !== "";
   const maxUnlocked = step3Valid ? 4 : step2Valid ? 3 : step1Valid ? 2 : 1;
@@ -850,6 +900,8 @@ export function ReportBuilder({
     setDataSourceId(id);
     setSchema(null);
     setSchemaError(null);
+    setFieldMapping(null);
+    setFieldMappingError(null);
     setSpec(emptyQuerySpec());
     setPreview(null);
     setPreviewError(null);
@@ -920,7 +972,9 @@ export function ReportBuilder({
     );
   }
 
-  const canPreview = spec.fields.length > 0 && (schema?.type === "google_sheets" || (spec.table ?? "") !== "");
+  const canPreview =
+    spec.fields.length > 0 &&
+    (schema?.type === "google_sheets" || schema?.type === "rest_api" || (spec.table ?? "") !== "");
 
   return (
     <div className="flex w-full flex-col gap-4">
@@ -963,7 +1017,7 @@ export function ReportBuilder({
 
           {schemaError && <p className="text-sm text-red-600">{schemaError}</p>}
 
-          {schema && schema.type !== "google_sheets" && (
+          {schema && schema.type !== "google_sheets" && schema.type !== "rest_api" && (
             <div className="flex flex-col gap-1">
               <label htmlFor="report-table" className="text-sm font-medium">
                 Table
@@ -988,6 +1042,27 @@ export function ReportBuilder({
 
       {step === 2 && schema && (
         <div className="flex flex-col gap-4">
+          {schema.type === "rest_api" && (
+            <div className="flex flex-col gap-2 rounded border border-black/[.1] p-4 dark:border-white/[.15]">
+              <div>
+                <h3 className="text-sm font-medium">Map API fields to system fields</h3>
+                <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                  Connect this source&apos;s detected fields to DocuWave&apos;s system fields — only mapped
+                  fields can be picked below.
+                </p>
+              </div>
+              <DataSourceFieldMappingPanel
+                key={dataSourceId}
+                token={token}
+                dataSourceId={dataSourceId}
+                onMappingChange={(mapping) =>
+                  setFieldMapping((prev) => (prev ? { ...prev, mapping } : prev))
+                }
+              />
+              {fieldMappingError && <p className="text-sm text-red-600">{fieldMappingError}</p>}
+            </div>
+          )}
+
           {columns.length > 0 && (
             <>
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

@@ -20,7 +20,6 @@ import { DataSourceForm } from "@/app/ui/data-source-form";
 import { GoogleSheetsConnectButton } from "@/app/ui/google-sheets-connect-button";
 import { GoogleSheetsPicker } from "@/app/ui/google-sheets-picker";
 import { DataSourceSchemaView } from "@/app/ui/data-source-schema";
-import { DataSourceFieldMappingPanel } from "@/app/ui/data-source-field-mapping";
 import { RestApiDataSourceForm } from "@/app/ui/rest-api-datasource-form";
 
 function sourceSubtitle(source: DataSource): string {
@@ -141,16 +140,6 @@ function DataSourcesContent() {
                   dataSourceId={source.id}
                   type={source.type}
                 />
-                {source.type === "rest_api" && (
-                  <div className="flex flex-col gap-2 border-t border-black/[.1] pt-3 dark:border-white/[.15]">
-                    <p className="text-sm font-medium">Field mapping</p>
-                    <DataSourceFieldMappingPanel
-                      key={source.id}
-                      token={token}
-                      dataSourceId={source.id}
-                    />
-                  </div>
-                )}
               </div>
             )}
           </div>

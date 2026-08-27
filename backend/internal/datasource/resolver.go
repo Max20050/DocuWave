@@ -15,14 +15,25 @@ type Resolver struct {
 	connections  *SheetsStore
 	encryptor    *Encryptor
 	sheetsConfig *GoogleSheetsConfig
+	// mappings is a REST source's api_field -> our_field mapping store. A REST
+	// connector needs it to remap query results (see restConnector.RunQuery);
+	// no other source type uses it.
+	mappings *FieldMappingStore
 }
 
-func NewResolver(store *Store, connections *SheetsStore, encryptor *Encryptor, sheetsConfig *GoogleSheetsConfig) *Resolver {
+func NewResolver(
+	store *Store,
+	connections *SheetsStore,
+	encryptor *Encryptor,
+	sheetsConfig *GoogleSheetsConfig,
+	mappings *FieldMappingStore,
+) *Resolver {
 	return &Resolver{
 		store:        store,
 		connections:  connections,
 		encryptor:    encryptor,
 		sheetsConfig: sheetsConfig,
+		mappings:     mappings,
 	}
 }
 
@@ -60,7 +71,17 @@ func (r *Resolver) connectorFor(ctx context.Context, userID string, ds DataSourc
 		}, nil
 
 	case restSourceType:
-		return restConnectorFor(r.encryptor, ds, encryptedAuthConfig)
+		// An empty/never-saved mapping means the connector remaps nothing —
+		// mirrored on the field_mapping_handlers.go Get handler, which treats
+		// ErrFieldMappingNotFound as "empty mapping", not an error.
+		mapping, _, err := r.mappings.Get(ctx, ds.ID)
+		if err != nil {
+			if !errors.Is(err, ErrFieldMappingNotFound) {
+				return nil, err
+			}
+			mapping = map[string]string{}
+		}
+		return restConnectorFor(r.encryptor, ds, encryptedAuthConfig, mapping)
 
 	default:
 		password, err := r.encryptor.Decrypt(encryptedPassword)
@@ -79,7 +100,7 @@ func (r *Resolver) connectorFor(ctx context.Context, userID string, ds DataSourc
 
 // restConnectorFor rebuilds a restConnector from a stored REST API data
 // source, decrypting its auth config.
-func restConnectorFor(encryptor *Encryptor, ds DataSource, encryptedAuthConfig []byte) (Connector, error) {
+func restConnectorFor(encryptor *Encryptor, ds DataSource, encryptedAuthConfig []byte, mapping map[string]string) (Connector, error) {
 	var auth restAuthConfig
 	if encryptedAuthConfig != nil {
 		decrypted, err := encryptor.Decrypt(encryptedAuthConfig)
@@ -102,6 +123,7 @@ func restConnectorFor(encryptor *Encryptor, ds DataSource, encryptedAuthConfig [
 		headers: headers,
 		auth:    auth,
 		body:    deref(ds.RestBody),
+		mapping: mapping,
 	}, nil
 }
 

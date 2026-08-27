@@ -86,12 +86,15 @@ func main() {
 		os.Getenv("GOOGLE_SHEETS_REDIRECT_URL"),
 	)
 	sheetsStore := datasource.NewSheetsStore(pool)
-	resolver := datasource.NewResolver(dsStore, sheetsStore, encryptor, sheetsConfig)
+	// fieldMappings is shared by the resolver (a REST connector needs the
+	// mapping to remap query results) and the field-mapping HTTP handlers.
+	fieldMappings := datasource.NewFieldMappingStore(pool)
+	resolver := datasource.NewResolver(dsStore, sheetsStore, encryptor, sheetsConfig, fieldMappings)
 	// A source's structure is read when it's connected and kept, because that
 	// stored picture is what report queries are built and checked against.
 	schemas := datasource.NewSchemaProvider(resolver, datasource.NewSchemaStore(pool))
 	schemaHandlers := datasource.NewSchemaHandlers(schemas)
-	fieldMappingHandlers := datasource.NewFieldMappingHandlers(datasource.NewFieldMappingStore(pool), schemas)
+	fieldMappingHandlers := datasource.NewFieldMappingHandlers(fieldMappings, schemas)
 
 	dsHandlers := datasource.NewHandlers(dsStore, encryptor, schemas)
 	sheetsHandlers := datasource.NewSheetsHandlers(
@@ -123,7 +126,7 @@ func main() {
 	templates := template.NewCompositeSource(registry, customTemplates, templateArchive)
 	// The runner is the whole report pipeline — query, template, files — and is
 	// what scheduled and on-demand delivery will run as well.
-	reportRunner := report.NewRunner(resolver, schemas, templates, llmGenerator)
+	reportRunner := report.NewRunner(resolver, schemas, templates, llmGenerator, fieldMappings)
 	reportHandlers := report.NewHandlers(
 		reportStore, reportRunner, templates, customTemplates, templateArchive, llmGenerator, aiSummaryEnabled)
 

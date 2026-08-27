@@ -2,6 +2,7 @@ package datasource
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -192,6 +193,132 @@ func TestRestConnectorIntrospectArrayRootIsRepresentativeRow(t *testing.T) {
 	}
 	if len(got.Fields) != 2 {
 		t.Errorf("got %d fields, want 2 (one per key, not one per array element)", len(got.Fields))
+	}
+}
+
+// restQueryPlanJSON encodes a restQueryPlan the same way query.compileREST
+// does, without importing the query package (which already imports this one).
+func restQueryPlanJSON(t *testing.T, fields ...string) string {
+	t.Helper()
+	encoded, err := json.Marshal(restQueryPlan{Fields: fields})
+	if err != nil {
+		t.Fatalf("encode rest query plan: %v", err)
+	}
+	return string(encoded)
+}
+
+// RunQuery has to remap every field of a multi-field row from its api_field
+// key to the our_field name the mapping points at, in the plan's order — not
+// the response's key order.
+func TestRestConnectorRunQueryRemapsFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[
+			{"id": 1, "full_name": "Ada Lovelace", "region_code": "north", "extra": "ignored"},
+			{"id": 2, "full_name": "Grace Hopper", "region_code": "south", "extra": "ignored"}
+		]`))
+	}))
+	defer server.Close()
+
+	c := &restConnector{
+		url: server.URL,
+		mapping: map[string]string{
+			"id":          "customer_id",
+			"full_name":   "customer_name",
+			"region_code": "region",
+		},
+	}
+
+	plan := restQueryPlanJSON(t, "customer_name", "region", "customer_id")
+	got, err := c.RunQuery(context.Background(), plan, nil, 100)
+	if err != nil {
+		t.Fatalf("RunQuery returned error: %v", err)
+	}
+
+	wantColumns := []string{"customer_name", "region", "customer_id"}
+	if !reflect.DeepEqual(got.Columns, wantColumns) {
+		t.Errorf("got columns %#v, want %#v", got.Columns, wantColumns)
+	}
+
+	wantRows := [][]any{
+		{"Ada Lovelace", "north", float64(1)},
+		{"Grace Hopper", "south", float64(2)},
+	}
+	if !reflect.DeepEqual(got.Rows, wantRows) {
+		t.Errorf("got rows %#v, want %#v", got.Rows, wantRows)
+	}
+	if got.Truncated {
+		t.Error("got Truncated true, want false — the limit was well above the row count")
+	}
+}
+
+// RunQuery caps rows at the caller's limit and reports Truncated, the same as
+// the other connectors.
+func TestRestConnectorRunQueryRespectsLimit(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"region_code": "north"}, {"region_code": "south"}, {"region_code": "east"}]`))
+	}))
+	defer server.Close()
+
+	c := &restConnector{url: server.URL, mapping: map[string]string{"region_code": "region"}}
+
+	plan := restQueryPlanJSON(t, "region")
+	got, err := c.RunQuery(context.Background(), plan, nil, 2)
+	if err != nil {
+		t.Fatalf("RunQuery returned error: %v", err)
+	}
+	if len(got.Rows) != 2 {
+		t.Errorf("got %d rows, want 2", len(got.Rows))
+	}
+	if !got.Truncated {
+		t.Error("got Truncated false, want true — the source had more rows than the limit")
+	}
+}
+
+// A report field with no mapped api_field must fail explicitly rather than
+// silently return empty data for it — the documented acceptance criterion for
+// issue #42.
+func TestRestConnectorRunQueryFailsExplicitlyOnUnmappedField(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"full_name": "Ada Lovelace"}]`))
+	}))
+	defer server.Close()
+
+	c := &restConnector{url: server.URL, mapping: map[string]string{"full_name": "customer_name"}}
+
+	// "region" isn't mapped to any api_field.
+	plan := restQueryPlanJSON(t, "customer_name", "region")
+	_, err := c.RunQuery(context.Background(), plan, nil, 100)
+	if err == nil {
+		t.Fatal("got nil error, want a failure for an unmapped field — never silent empty data")
+	}
+}
+
+// A row missing one of the mapped api_fields (present in another row, absent
+// in this one) reports that field as nil rather than failing the whole query
+// — the same tolerance a SQL NULL gets.
+func TestRestConnectorRunQueryFillsNilForFieldMissingOnARow(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[{"full_name": "Ada Lovelace"}]`))
+	}))
+	defer server.Close()
+
+	c := &restConnector{url: server.URL, mapping: map[string]string{
+		"full_name":   "customer_name",
+		"region_code": "region",
+	}}
+
+	plan := restQueryPlanJSON(t, "customer_name", "region")
+	got, err := c.RunQuery(context.Background(), plan, nil, 100)
+	if err != nil {
+		t.Fatalf("RunQuery returned error: %v", err)
+	}
+	want := [][]any{{"Ada Lovelace", nil}}
+	if !reflect.DeepEqual(got.Rows, want) {
+		t.Errorf("got rows %#v, want %#v", got.Rows, want)
 	}
 }
 

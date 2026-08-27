@@ -18,9 +18,15 @@ type Point = { x: number; y: number };
 export function DataSourceFieldMappingPanel({
   token,
   dataSourceId,
+  onMappingChange,
 }: {
   token: string;
   dataSourceId: string;
+  // onMappingChange fires with the freshly-saved mapping whenever a
+  // connection is made or removed, so a caller that needs its own copy of
+  // the mapping (the report builder's field picker, keyed off it) can stay
+  // in sync without re-fetching on a timer.
+  onMappingChange?: (mapping: Record<string, string>) => void;
 }) {
   const [apiFields, setApiFields] = useState<string[] | null>(null);
   const [systemFields, setSystemFields] = useState<SystemField[]>([]);
@@ -123,7 +129,10 @@ export function DataSourceFieldMappingPanel({
     setSaving(true);
     setError(null);
     saveFieldMapping(token, dataSourceId, next)
-      .then((result) => setMapping(result.mapping))
+      .then((result) => {
+        setMapping(result.mapping);
+        onMappingChange?.(result.mapping);
+      })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to save field mapping"))
       .finally(() => setSaving(false));
   }

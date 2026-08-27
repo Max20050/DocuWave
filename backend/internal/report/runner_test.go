@@ -15,7 +15,7 @@ import (
 // A report saved before query building has query text but no specification, and
 // nothing runs stored text — so it fails before it reaches the data source.
 func TestDocumentRejectsALegacyReport(t *testing.T) {
-	runner := NewRunner(nil, nil, nil, nil)
+	runner := NewRunner(nil, nil, nil, nil, nil)
 
 	_, err := runner.Document(context.Background(), Report{
 		ID:    "r-legacy",
@@ -29,7 +29,7 @@ func TestDocumentRejectsALegacyReport(t *testing.T) {
 // The formats a report is configured for are what its client agreed to receive,
 // so a request for another one is refused before the query runs.
 func TestRenderFormatRejectsAnUnconfiguredFormat(t *testing.T) {
-	runner := NewRunner(nil, nil, nil, nil)
+	runner := NewRunner(nil, nil, nil, nil, nil)
 	rep := Report{
 		ID:        "r-1",
 		Name:      "Monthly sales",

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"time"
 
@@ -44,6 +45,11 @@ type Runner struct {
 	// report owner's own configured LLM provider. It's nil in tests that never
 	// exercise a template with such a block.
 	summaries *llm.Generator
+	// mappings is a REST source's api_field -> our_field mapping store. A
+	// report against a REST source is compiled against the mapped our_field
+	// names (see mappedRESTSchema), not the raw api_field names Introspect
+	// reports — that's what the report builder's field picker offers.
+	mappings *datasource.FieldMappingStore
 }
 
 func NewRunner(
@@ -51,8 +57,9 @@ func NewRunner(
 	schemas *datasource.SchemaProvider,
 	templates template.Source,
 	summaries *llm.Generator,
+	mappings *datasource.FieldMappingStore,
 ) *Runner {
-	return &Runner{resolver: resolver, schemas: schemas, templates: templates, summaries: summaries}
+	return &Runner{resolver: resolver, schemas: schemas, templates: templates, summaries: summaries, mappings: mappings}
 }
 
 // runnable is a compiled query with everything needed to run it.
@@ -86,12 +93,48 @@ func (r *Runner) prepare(
 		return runnable{}, err
 	}
 
+	if dialect == query.DialectREST {
+		schema, err = r.mappedRESTSchema(ctx, dataSourceID)
+		if err != nil {
+			return runnable{}, err
+		}
+	}
+
 	compiled, err := query.Compile(spec, schema, dialect, time.Now())
 	if err != nil {
 		return runnable{}, err
 	}
 
 	return runnable{connector: connector, compiled: compiled, language: connector.QueryLanguage()}, nil
+}
+
+// mappedRESTSchema builds the schema a REST source's spec is validated
+// against: the deduped list of our_field names its stored field mapping
+// points at, rather than the raw api_field names Introspect reports. That's
+// what makes the report builder's field picker offer system-field names, and
+// what makes selecting an unmapped field fail at compile time instead of
+// silently returning nothing for it.
+func (r *Runner) mappedRESTSchema(ctx context.Context, dataSourceID string) (datasource.Schema, error) {
+	mapping, _, err := r.mappings.Get(ctx, dataSourceID)
+	if err != nil {
+		if !errors.Is(err, datasource.ErrFieldMappingNotFound) {
+			return datasource.Schema{}, err
+		}
+		mapping = map[string]string{}
+	}
+
+	seen := make(map[string]bool, len(mapping))
+	fields := make([]string, 0, len(mapping))
+	for _, ourField := range mapping {
+		if seen[ourField] {
+			continue
+		}
+		seen[ourField] = true
+		fields = append(fields, ourField)
+	}
+	sort.Strings(fields)
+
+	return datasource.Schema{Fields: fields}, nil
 }
 
 // run executes a prepared query.

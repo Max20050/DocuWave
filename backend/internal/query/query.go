@@ -233,6 +233,11 @@ const (
 	// DialectSheets is the Google Visualization query language, the only thing
 	// Sheets offers that runs a query.
 	DialectSheets Dialect = "google_sheets"
+	// DialectREST has no query language at all: a REST API source only
+	// supports selecting and reordering its already-mapped fields, so
+	// compileREST produces a small JSON plan instead of query text. See
+	// rest.go.
+	DialectREST Dialect = "rest_api"
 )
 
 // dialects maps a stored data source type onto the query language its connector
@@ -242,6 +247,7 @@ var dialects = map[string]Dialect{
 	"postgres":      DialectPostgres,
 	"mysql":         DialectMySQL,
 	"google_sheets": DialectSheets,
+	"rest_api":      DialectREST,
 }
 
 // DialectFor returns the dialect for a stored data source type.

@@ -17,14 +17,21 @@ const introspectTimeout = 15 * time.Second
 // what the report builder offers as tables, columns and filterable fields.
 type SchemaHandlers struct {
 	schemas *SchemaProvider
+	store   *Store
 }
 
-func NewSchemaHandlers(schemas *SchemaProvider) *SchemaHandlers {
-	return &SchemaHandlers{schemas: schemas}
+func NewSchemaHandlers(schemas *SchemaProvider, store *Store) *SchemaHandlers {
+	return &SchemaHandlers{schemas: schemas, store: store}
 }
 
 type schemaResponse struct {
 	DataSourceID string `json:"dataSourceId"`
+	// Type is the data source's own stored type ("postgres", "google_sheets",
+	// "rest_api", ...), which is how the report builder tells a source with
+	// tables apart from one that just has fields — Schema itself carries no
+	// type, since it's shaped by what was read, not by what kind of source
+	// was read from.
+	Type string `json:"type"`
 	// FetchedAt tells the user how old the picture they're building against is.
 	FetchedAt string `json:"fetchedAt"`
 	Schema
@@ -72,6 +79,14 @@ func (h *SchemaHandlers) respond(
 		return
 	}
 
+	// The type comes from the stored data source, not from Schema, so it's
+	// read separately from whichever of Get/Refresh `load` runs.
+	ds, _, _, err := h.store.Get(r.Context(), userID, id)
+	if err != nil {
+		writeResolveError(w, err)
+		return
+	}
+
 	schema, fetchedAt, err := load(userID, id)
 	if err != nil {
 		writeSchemaError(w, err)
@@ -80,6 +95,7 @@ func (h *SchemaHandlers) respond(
 
 	writeJSON(w, http.StatusOK, schemaResponse{
 		DataSourceID: id,
+		Type:         ds.Type,
 		FetchedAt:    fetchedAt.UTC().Format(time.RFC3339),
 		Schema:       schema,
 	})

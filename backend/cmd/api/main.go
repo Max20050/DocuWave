@@ -93,7 +93,7 @@ func main() {
 	// A source's structure is read when it's connected and kept, because that
 	// stored picture is what report queries are built and checked against.
 	schemas := datasource.NewSchemaProvider(resolver, datasource.NewSchemaStore(pool))
-	schemaHandlers := datasource.NewSchemaHandlers(schemas)
+	schemaHandlers := datasource.NewSchemaHandlers(schemas, dsStore)
 	fieldMappingHandlers := datasource.NewFieldMappingHandlers(fieldMappings, schemas)
 
 	dsHandlers := datasource.NewHandlers(dsStore, encryptor, schemas)

@@ -113,13 +113,14 @@ func TestSchemaResponseJSONShape(t *testing.T) {
 
 	sqlBody, err := json.Marshal(schemaResponse{
 		DataSourceID: "ds-1",
+		Type:         "postgres",
 		FetchedAt:    fetched.Format(time.RFC3339),
 		Schema:       Schema{Tables: []Table{{Name: "orders", Columns: []Column{{Name: "id", Type: "uuid"}}}}},
 	})
 	if err != nil {
 		t.Fatalf("marshal returned error: %v", err)
 	}
-	wantSQL := `{"dataSourceId":"ds-1","fetchedAt":"2026-08-12T09:30:00Z",` +
+	wantSQL := `{"dataSourceId":"ds-1","type":"postgres","fetchedAt":"2026-08-12T09:30:00Z",` +
 		`"tables":[{"name":"orders","columns":[{"name":"id","type":"uuid"}]}]}`
 	if string(sqlBody) != wantSQL {
 		t.Errorf("got %s, want %s", sqlBody, wantSQL)
@@ -127,20 +128,21 @@ func TestSchemaResponseJSONShape(t *testing.T) {
 
 	sheetsBody, err := json.Marshal(schemaResponse{
 		DataSourceID: "ds-2",
+		Type:         "google_sheets",
 		FetchedAt:    fetched.Format(time.RFC3339),
 		Schema:       Schema{Fields: []string{"Region", "Sales"}},
 	})
 	if err != nil {
 		t.Fatalf("marshal returned error: %v", err)
 	}
-	wantSheets := `{"dataSourceId":"ds-2","fetchedAt":"2026-08-12T09:30:00Z","fields":["Region","Sales"]}`
+	wantSheets := `{"dataSourceId":"ds-2","type":"google_sheets","fetchedAt":"2026-08-12T09:30:00Z","fields":["Region","Sales"]}`
 	if string(sheetsBody) != wantSheets {
 		t.Errorf("got %s, want %s", sheetsBody, wantSheets)
 	}
 }
 
 func TestSchemaHandlerRequiresAuthentication(t *testing.T) {
-	handlers := NewSchemaHandlers(nil)
+	handlers := NewSchemaHandlers(nil, nil)
 
 	for name, handler := range map[string]http.HandlerFunc{"get": handlers.Get, "refresh": handlers.Refresh} {
 		t.Run(name, func(t *testing.T) {

@@ -21,11 +21,20 @@ func sqlSchema() datasource.Schema {
 			{Name: "units", Type: "integer"},
 			{Name: "closed_at", Type: "timestamp with time zone"},
 			{Name: "refunded", Type: "boolean"},
+			{Name: "supplier_id", Type: "integer"},
 		}},
 		// A table outside the default schema keeps its prefix, and one with an
 		// awkward name proves identifiers are quoted rather than trusted.
 		{Name: "reporting.monthly", Columns: []datasource.Column{
 			{Name: `we"ird`, Type: "text"},
+		}},
+		{Name: "suppliers", Columns: []datasource.Column{
+			{Name: "id", Type: "integer"},
+			{Name: "name", Type: "text"},
+		}},
+		{Name: "reps", Columns: []datasource.Column{
+			{Name: "id", Type: "integer"},
+			{Name: "name", Type: "text"},
 		}},
 	}}
 }
@@ -421,6 +430,252 @@ func TestCompileNeverWritesValuesIntoSQL(t *testing.T) {
 		if len(compiled.Args) != 4 {
 			t.Errorf("%s: got %d bound values, want 4", dialect, len(compiled.Args))
 		}
+	}
+}
+
+// A report like "sales by rep, with which supplier served them" needs a join:
+// this is the shape the feature exists for.
+func TestCompileJoinsATable(t *testing.T) {
+	spec := Spec{
+		Table: "sales",
+		Joins: []Join{
+			{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}},
+		},
+		Fields: []Field{
+			{Column: "region"},
+			{Column: "suppliers.name"},
+			{Column: "total", Aggregate: AggregateSum},
+		},
+		Sorts: []Sort{{Column: "total", Aggregate: AggregateSum, Descending: true}},
+		Limit: 100,
+	}
+
+	compiled, err := Compile(spec, sqlSchema(), DialectPostgres, referenceTime)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+
+	want := `SELECT "sales"."region" AS "region", "suppliers"."name" AS "suppliers_name", SUM("sales"."total") AS "sum_total"
+FROM "sales"
+INNER JOIN "suppliers" ON "sales"."supplier_id" = "suppliers"."id"
+GROUP BY "sales"."region", "suppliers"."name"
+ORDER BY SUM("sales"."total") DESC
+LIMIT 100`
+	if compiled.Text != want {
+		t.Errorf("got:\n%s\nwant:\n%s", compiled.Text, want)
+	}
+	if got := strings.Join(compiled.Columns, ","); got != "region,suppliers_name,sum_total" {
+		t.Errorf("got columns %q, want region,suppliers_name,sum_total", got)
+	}
+}
+
+// A join's default is inner; asking for "left" keeps rows from the base table
+// that have no match on the joined one, NULL where it found nothing — the
+// only way to answer "which of ours had none of theirs".
+func TestCompileLeftJoin(t *testing.T) {
+	spec := Spec{
+		Table: "sales",
+		Joins: []Join{
+			{Table: "suppliers", Type: JoinLeft, On: []JoinCondition{{Left: "supplier_id", Right: "id"}}},
+		},
+		Fields: []Field{{Column: "region"}},
+	}
+
+	compiled, err := Compile(spec, sqlSchema(), DialectPostgres, referenceTime)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	if !strings.Contains(compiled.Text, "LEFT JOIN \"suppliers\" ON") {
+		t.Errorf("got %s, want a LEFT JOIN", compiled.Text)
+	}
+}
+
+func TestCompileMySQLJoinsATable(t *testing.T) {
+	spec := Spec{
+		Table: "sales",
+		Joins: []Join{
+			{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}},
+		},
+		Fields: []Field{{Column: "suppliers.name"}},
+	}
+
+	compiled, err := Compile(spec, sqlSchema(), DialectMySQL, referenceTime)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	want := "SELECT `suppliers`.`name` AS `suppliers_name`\n" +
+		"FROM `sales`\n" +
+		"INNER JOIN `suppliers` ON `sales`.`supplier_id` = `suppliers`.`id`\n" +
+		"LIMIT 1000"
+	if compiled.Text != want {
+		t.Errorf("got:\n%s\nwant:\n%s", compiled.Text, want)
+	}
+}
+
+// A filter can narrow by a joined table's column too, still bound rather than
+// written into the text.
+func TestCompileFiltersOnAJoinedColumn(t *testing.T) {
+	spec := Spec{
+		Table:   "sales",
+		Joins:   []Join{{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}}},
+		Fields:  []Field{{Column: "region"}},
+		Filters: []Filter{{Column: "suppliers.name", Operator: OpEquals, Value: "Acme"}},
+	}
+
+	compiled, err := Compile(spec, sqlSchema(), DialectPostgres, referenceTime)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	if !strings.Contains(compiled.Text, `WHERE "suppliers"."name" = $1`) {
+		t.Errorf("got %s, want a qualified filter on the joined table", compiled.Text)
+	}
+	if compiled.Args[0] != "Acme" {
+		t.Errorf("got args %#v, want [Acme]", compiled.Args)
+	}
+}
+
+// Both suppliers and reps have a "name" column; selecting either unqualified
+// is a real ambiguity, not something to guess at.
+func TestCompileRejectsAmbiguousJoinedColumn(t *testing.T) {
+	spec := Spec{
+		Table: "sales",
+		Joins: []Join{
+			{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}},
+			{Table: "reps", On: []JoinCondition{{Left: "rep", Right: "name"}}},
+		},
+		Fields: []Field{{Column: "name"}},
+	}
+
+	_, err := Compile(spec, sqlSchema(), DialectPostgres, referenceTime)
+	if !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("got %v, want ErrInvalidSpec", err)
+	}
+	if !strings.Contains(err.Error(), "qualify it as table.column") {
+		t.Errorf("error %q does not explain the ambiguity", err)
+	}
+}
+
+func TestCompileRejectsBadJoins(t *testing.T) {
+	tests := []struct {
+		name     string
+		spec     Spec
+		wantText string
+	}{
+		{
+			name: "joined table not in the schema",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{{Table: "vendors; DROP TABLE users", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}}}},
+			wantText: "is not a table",
+		},
+		{
+			name: "join with no table",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{{On: []JoinCondition{{Left: "supplier_id", Right: "id"}}}}},
+			wantText: "a join needs a table",
+		},
+		{
+			name: "join with no conditions",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{{Table: "suppliers"}}},
+			wantText: "needs at least one condition",
+		},
+		{
+			name: "join type that isn't supported",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{{Table: "suppliers", Type: "full_outer", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}}}},
+			wantText: "not a supported join type",
+		},
+		{
+			name: "join condition's left column doesn't exist yet",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{{Table: "suppliers", On: []JoinCondition{{Left: "suppliers.id", Right: "id"}}}}},
+			wantText: "is not a column",
+		},
+		{
+			name: "join condition's right column isn't on the joined table",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "region"}}}}},
+			wantText: "is not a column",
+		},
+		{
+			name: "the same table joined twice",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{
+					{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}},
+					{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}},
+				}},
+			wantText: "already part of this query",
+		},
+		{
+			name: "joining the base table to itself",
+			spec: Spec{Table: "sales", Fields: []Field{{Column: "region"}},
+				Joins: []Join{{Table: "sales", On: []JoinCondition{{Left: "supplier_id", Right: "supplier_id"}}}}},
+			wantText: "already part of this query",
+		},
+		{
+			name: "joins on a sheet",
+			spec: Spec{Fields: []Field{{Column: "region"}},
+				Joins: []Join{{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}}}},
+			wantText: "no tables to join",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			schema := sqlSchema()
+			dialect := Dialect(DialectPostgres)
+			if tt.name == "joins on a sheet" {
+				schema = sheetsSchema()
+				dialect = DialectSheets
+			}
+			_, err := Compile(tt.spec, schema, dialect, referenceTime)
+			if err == nil {
+				t.Fatal("got no error, want an invalid spec")
+			}
+			if !errors.Is(err, ErrInvalidSpec) {
+				t.Errorf("error %v does not wrap ErrInvalidSpec", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantText) {
+				t.Errorf("error %q does not mention %q", err, tt.wantText)
+			}
+		})
+	}
+}
+
+// A spec is never rejected merely for size — up to the cap it's just a bigger
+// query — but a query joining more tables than that is refused before it's
+// ever compiled.
+func TestCompileRejectsTooManyJoins(t *testing.T) {
+	joins := make([]Join, 0, MaxJoins+1)
+	for i := 0; i <= MaxJoins; i++ {
+		joins = append(joins, Join{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}})
+	}
+	spec := Spec{Table: "sales", Fields: []Field{{Column: "region"}}, Joins: joins}
+
+	_, err := Compile(spec, sqlSchema(), DialectPostgres, referenceTime)
+	if !errors.Is(err, ErrInvalidSpec) {
+		t.Fatalf("got %v, want ErrInvalidSpec", err)
+	}
+	if !strings.Contains(err.Error(), "cannot join more than") {
+		t.Errorf("error %q does not mention the join cap", err)
+	}
+}
+
+// Sorting by a joined table's field works the same way selecting it does.
+func TestCompileSortsByAJoinedField(t *testing.T) {
+	spec := Spec{
+		Table:  "sales",
+		Joins:  []Join{{Table: "suppliers", On: []JoinCondition{{Left: "supplier_id", Right: "id"}}}},
+		Fields: []Field{{Column: "suppliers.name"}},
+		Sorts:  []Sort{{Column: "suppliers.name"}},
+	}
+
+	compiled, err := Compile(spec, sqlSchema(), DialectPostgres, referenceTime)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	if !strings.Contains(compiled.Text, `ORDER BY "suppliers"."name" ASC`) {
+		t.Errorf("got %s, want an ORDER BY on the joined column", compiled.Text)
 	}
 }
 

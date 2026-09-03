@@ -32,6 +32,9 @@ const (
 	DefaultRowLimit = 1000
 	// MaxRowLimit caps what a spec may ask for.
 	MaxRowLimit = 5000
+	// MaxJoins caps how many extra tables a spec may bring in. A report is a
+	// summary of a handful of related tables, not an arbitrary query plan.
+	MaxJoins = 5
 )
 
 // Aggregate is how a field's values are collapsed across a group.
@@ -175,6 +178,45 @@ type Sort struct {
 	Descending bool      `json:"descending,omitempty"`
 }
 
+// JoinType says how rows without a match on the joined table are treated.
+type JoinType string
+
+const (
+	// JoinInner keeps only rows with a match, and is what an empty Join.Type means.
+	JoinInner JoinType = "inner"
+	// JoinLeft keeps every row already in the query, with the joined table's
+	// columns NULL wherever it had no match — the shape a report needs to
+	// answer "which of ours had none of theirs".
+	JoinLeft JoinType = "left"
+)
+
+// JoinTypes lists every join type a spec may use, which is also what the UI offers.
+var JoinTypes = []JoinType{JoinInner, JoinLeft}
+
+// IsJoinType reports whether t is one JoinTypes lists.
+func IsJoinType(t JoinType) bool {
+	return slices.Contains(JoinTypes, t)
+}
+
+// JoinCondition equates one column already in the query — the base table, or
+// a table an earlier Join added — with one column of the table this join
+// adds. A column name is bare unless it's ambiguous, in which case it's
+// qualified as "table.column"; the same rule Field, Filter and Sort columns
+// follow.
+type JoinCondition struct {
+	Left  string `json:"left"`
+	Right string `json:"right"`
+}
+
+// Join adds one more table to a Spec's query, matched to what's already
+// there by one or more equality conditions. Only SQL data sources support it.
+type Join struct {
+	Table string `json:"table"`
+	// Type is the join's kind; empty means JoinInner.
+	Type JoinType        `json:"type,omitempty"`
+	On   []JoinCondition `json:"on"`
+}
+
 // PlaceholderFilter is a filter whose value isn't known yet: it names a
 // recipient attribute the value will come from once the report is run for a
 // specific recipient ("email", "name", or a key into their free-form
@@ -192,7 +234,10 @@ type PlaceholderFilter struct {
 type Spec struct {
 	// Table is a table name from the source's schema. Sources that expose a
 	// single sheet rather than tables leave it empty.
-	Table   string   `json:"table,omitempty"`
+	Table string `json:"table,omitempty"`
+	// Joins add more tables to read from, each matched to what's already
+	// there. Only SQL data sources support them.
+	Joins   []Join   `json:"joins,omitempty"`
 	Fields  []Field  `json:"fields"`
 	Filters []Filter `json:"filters,omitempty"`
 	// PlaceholderFilters are not part of Filters and Compile never sees them —

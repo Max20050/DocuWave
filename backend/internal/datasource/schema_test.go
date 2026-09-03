@@ -68,6 +68,34 @@ func TestGroupColumnsWithNoRows(t *testing.T) {
 	}
 }
 
+func TestAttachForeignKeysMatchesByTableName(t *testing.T) {
+	tables := []Table{
+		{Name: "orders", Columns: []Column{{Name: "id", Type: "uuid"}, {Name: "customer_id", Type: "uuid"}}},
+		{Name: "customers", Columns: []Column{{Name: "id", Type: "uuid"}}},
+	}
+	rows := []foreignKeyRow{
+		{Schema: "public", Table: "orders", Column: "customer_id",
+			ReferencedSchema: "public", ReferencedTable: "customers", ReferencedColumn: "id"},
+		// A constraint on a table Introspect didn't return columns for (outside
+		// the schemas read) has nowhere to attach and is dropped.
+		{Schema: "public", Table: "archived_orders", Column: "customer_id",
+			ReferencedSchema: "public", ReferencedTable: "customers", ReferencedColumn: "id"},
+	}
+
+	got := attachForeignKeys(tables, rows)
+
+	if len(got[0].ForeignKeys) != 1 {
+		t.Fatalf("got %d foreign keys on orders, want 1", len(got[0].ForeignKeys))
+	}
+	want := ForeignKey{Column: "customer_id", ReferencedTable: "customers", ReferencedColumn: "id"}
+	if got[0].ForeignKeys[0] != want {
+		t.Errorf("got %+v, want %+v", got[0].ForeignKeys[0], want)
+	}
+	if len(got[1].ForeignKeys) != 0 {
+		t.Errorf("got %d foreign keys on customers, want 0", len(got[1].ForeignKeys))
+	}
+}
+
 func TestHeaderFields(t *testing.T) {
 	tests := []struct {
 		name   string

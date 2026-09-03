@@ -17,12 +17,24 @@ type Schema struct {
 type Table struct {
 	Name    string   `json:"name"`
 	Columns []Column `json:"columns"`
+	// ForeignKeys are this table's own declared foreign keys, read for the
+	// report builder to suggest joins with. A Spec's Joins are never derived
+	// from these automatically — only whatever the user picks reaches a query.
+	ForeignKeys []ForeignKey `json:"foreignKeys,omitempty"`
 }
 
 // Column is a single column of a Table, with the source's own type name.
 type Column struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
+}
+
+// ForeignKey is one column of a Table that the source's own constraints say
+// references a column of another table.
+type ForeignKey struct {
+	Column           string `json:"column"`
+	ReferencedTable  string `json:"referencedTable"`
+	ReferencedColumn string `json:"referencedColumn"`
 }
 
 // columnRow is one row of a SQL introspection query, before columns are
@@ -32,6 +44,17 @@ type columnRow struct {
 	Table  string
 	Column string
 	Type   string
+}
+
+// foreignKeyRow is one row of a SQL foreign-key introspection query, before
+// rows are matched against the table Introspect already built for them.
+type foreignKeyRow struct {
+	Schema           string
+	Table            string
+	Column           string
+	ReferencedSchema string
+	ReferencedTable  string
+	ReferencedColumn string
 }
 
 // qualifiedTableName prefixes the schema unless it's absent (MySQL, where the
@@ -58,6 +81,31 @@ func groupColumns(rows []columnRow) []Table {
 			tables = append(tables, Table{Name: name, Columns: make([]Column, 0)})
 		}
 		tables[idx].Columns = append(tables[idx].Columns, Column{Name: row.Column, Type: row.Type})
+	}
+
+	return tables
+}
+
+// attachForeignKeys folds foreign-key rows onto the tables groupColumns
+// already built, matching by table name. A row naming a table Introspect
+// didn't return any columns for (a constraint on a table outside the schemas
+// read) is dropped rather than guessed at.
+func attachForeignKeys(tables []Table, rows []foreignKeyRow) []Table {
+	indexByName := make(map[string]int, len(tables))
+	for i, table := range tables {
+		indexByName[table.Name] = i
+	}
+
+	for _, row := range rows {
+		idx, ok := indexByName[qualifiedTableName(row.Schema, row.Table)]
+		if !ok {
+			continue
+		}
+		tables[idx].ForeignKeys = append(tables[idx].ForeignKeys, ForeignKey{
+			Column:           row.Column,
+			ReferencedTable:  qualifiedTableName(row.ReferencedSchema, row.ReferencedTable),
+			ReferencedColumn: row.ReferencedColumn,
+		})
 	}
 
 	return tables

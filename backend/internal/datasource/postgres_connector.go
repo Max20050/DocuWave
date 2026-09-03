@@ -17,6 +17,23 @@ const postgresColumnsQuery = `
 	WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
 	ORDER BY table_schema, table_name, ordinal_position`
 
+// postgresForeignKeysQuery lists every foreign key of every user table, joining
+// the constraint to the column it's declared on and the column it references.
+// This is read purely to suggest joins in the report builder; nothing here
+// ever runs as part of a compiled query.
+const postgresForeignKeysQuery = `
+	SELECT
+		tc.table_schema, tc.table_name, kcu.column_name,
+		ccu.table_schema, ccu.table_name, ccu.column_name
+	FROM information_schema.table_constraints tc
+	JOIN information_schema.key_column_usage kcu
+		ON kcu.constraint_name = tc.constraint_name AND kcu.constraint_schema = tc.constraint_schema
+	JOIN information_schema.constraint_column_usage ccu
+		ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.constraint_schema
+	WHERE tc.constraint_type = 'FOREIGN KEY'
+		AND tc.table_schema NOT IN ('pg_catalog', 'information_schema')
+	ORDER BY tc.table_schema, tc.table_name, kcu.ordinal_position`
+
 type postgresConnector struct {
 	cfg ConnectionConfig
 }
@@ -63,8 +80,28 @@ func (c *postgresConnector) Introspect(ctx context.Context) (Schema, error) {
 	if err := rows.Err(); err != nil {
 		return Schema{}, err
 	}
+	tables := groupColumns(columns)
 
-	return Schema{Tables: groupColumns(columns)}, nil
+	fkRows, err := conn.Query(ctx, postgresForeignKeysQuery)
+	if err != nil {
+		return Schema{}, err
+	}
+	defer fkRows.Close()
+
+	foreignKeys := make([]foreignKeyRow, 0)
+	for fkRows.Next() {
+		var row foreignKeyRow
+		if err := fkRows.Scan(&row.Schema, &row.Table, &row.Column,
+			&row.ReferencedSchema, &row.ReferencedTable, &row.ReferencedColumn); err != nil {
+			return Schema{}, err
+		}
+		foreignKeys = append(foreignKeys, row)
+	}
+	if err := fkRows.Err(); err != nil {
+		return Schema{}, err
+	}
+
+	return Schema{Tables: attachForeignKeys(tables, foreignKeys)}, nil
 }
 
 func (c *postgresConnector) QueryLanguage() string {

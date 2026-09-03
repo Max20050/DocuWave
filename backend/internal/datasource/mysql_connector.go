@@ -17,6 +17,17 @@ const mysqlColumnsQuery = `
 	WHERE table_schema = ?
 	ORDER BY table_name, ordinal_position`
 
+// mysqlForeignKeysQuery lists every foreign key of the connected database.
+// key_column_usage already carries the referenced table and column for a
+// foreign key, unlike Postgres, so no join against another view is needed.
+// This is read purely to suggest joins in the report builder; nothing here
+// ever runs as part of a compiled query.
+const mysqlForeignKeysQuery = `
+	SELECT table_name, column_name, referenced_table_name, referenced_column_name
+	FROM information_schema.key_column_usage
+	WHERE table_schema = ? AND referenced_table_name IS NOT NULL
+	ORDER BY table_name, ordinal_position`
+
 type mysqlConnector struct {
 	cfg ConnectionConfig
 }
@@ -63,8 +74,27 @@ func (c *mysqlConnector) Introspect(ctx context.Context) (Schema, error) {
 	if err := rows.Err(); err != nil {
 		return Schema{}, err
 	}
+	tables := groupColumns(columns)
 
-	return Schema{Tables: groupColumns(columns)}, nil
+	fkRows, err := db.QueryContext(ctx, mysqlForeignKeysQuery, c.cfg.DBName)
+	if err != nil {
+		return Schema{}, err
+	}
+	defer fkRows.Close()
+
+	foreignKeys := make([]foreignKeyRow, 0)
+	for fkRows.Next() {
+		var row foreignKeyRow
+		if err := fkRows.Scan(&row.Table, &row.Column, &row.ReferencedTable, &row.ReferencedColumn); err != nil {
+			return Schema{}, err
+		}
+		foreignKeys = append(foreignKeys, row)
+	}
+	if err := fkRows.Err(); err != nil {
+		return Schema{}, err
+	}
+
+	return Schema{Tables: attachForeignKeys(tables, foreignKeys)}, nil
 }
 
 func (c *mysqlConnector) QueryLanguage() string {

@@ -166,9 +166,19 @@ export type SchemaColumn = {
   type: string;
 };
 
+// ForeignKey is one column a SQL source's own constraints say references a
+// column of another table. It's read purely to suggest joins in the report
+// builder — a report's own QueryJoin is never generated from one automatically.
+export type ForeignKey = {
+  column: string;
+  referencedTable: string;
+  referencedColumn: string;
+};
+
 export type SchemaTable = {
   name: string;
   columns: SchemaColumn[];
+  foreignKeys?: ForeignKey[];
 };
 
 // SQL sources report `tables`; Google Sheets and REST API sources report
@@ -548,6 +558,31 @@ export type QuerySort = {
   descending?: boolean;
 };
 
+// JoinType is how rows without a match on the joined table are treated.
+// Mirrors backend/internal/query/query.go's JoinType.
+export type JoinType = "inner" | "left";
+
+export const JOIN_TYPES: { value: JoinType; label: string }[] = [
+  { value: "inner", label: "Inner (only matching rows)" },
+  { value: "left", label: "Left (keep unmatched rows too)" },
+];
+
+export type QueryJoinCondition = {
+  left: string;
+  right: string;
+};
+
+// QueryJoin adds one more table to a report's query, matched to what's
+// already there by one or more equality conditions. Column names in `on` are
+// bare unless ambiguous, in which case they're qualified as "table.column" —
+// the same rule QueryField/QueryFilter/QuerySort columns follow once more
+// than one table is in play.
+export type QueryJoin = {
+  table: string;
+  type?: JoinType;
+  on: QueryJoinCondition[];
+};
+
 // PlaceholderFilter is a filter whose value isn't known yet: it names a
 // recipient attribute ("email", "name", or a key into their free-form
 // attributes) the value will come from once the report is sent to a specific
@@ -565,6 +600,9 @@ export type PlaceholderFilter = {
 // when the server compiles it.
 export type QuerySpec = {
   table?: string;
+  // joins add more tables to read from, each matched to what's already there.
+  // Only SQL data sources support them.
+  joins?: QueryJoin[];
   fields: QueryField[];
   filters?: QueryFilter[];
   placeholderFilters?: PlaceholderFilter[];
@@ -573,7 +611,7 @@ export type QuerySpec = {
 };
 
 export function emptyQuerySpec(): QuerySpec {
-  return { table: "", fields: [], filters: [], placeholderFilters: [], sorts: [] };
+  return { table: "", joins: [], fields: [], filters: [], placeholderFilters: [], sorts: [] };
 }
 
 // Cell values come straight from the data source, so anything JSON can hold.

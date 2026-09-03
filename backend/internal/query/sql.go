@@ -75,7 +75,22 @@ func backtickQuote(name string) string {
 	return "`" + strings.ReplaceAll(name, "`", "``") + "`"
 }
 
+// sqlJoinKeyword renders a join's type. Membership in this map is the
+// whitelist alongside JoinTypes: resolve.go never lets a join reach here with
+// a type absent from it.
+var sqlJoinKeyword = map[JoinType]string{
+	JoinInner: "INNER JOIN",
+	JoinLeft:  "LEFT JOIN",
+}
+
 func compileSQL(res resolved, syntax sqlSyntax) (Compiled, error) {
+	// Once more than one table is in play, a bare column name is ambiguous at
+	// the database level even where this package's own lookup found it
+	// unambiguous (nothing else selected happens to share the name) — so every
+	// column is qualified with its table as soon as there's a join to make
+	// ambiguous.
+	qualify := len(res.joins) > 0
+
 	args := make([]any, 0)
 	// bind adds a value to the arguments and returns the placeholder standing in
 	// for it. Values only ever reach the query this way.
@@ -90,7 +105,7 @@ func compileSQL(res resolved, syntax sqlSyntax) (Compiled, error) {
 		if i > 0 {
 			b.WriteString(", ")
 		}
-		b.WriteString(sqlFieldExpression(field, syntax))
+		b.WriteString(sqlFieldExpression(field, syntax, qualify))
 		b.WriteString(" AS ")
 		b.WriteString(syntax.quoteIdentifier(field.output))
 	}
@@ -98,13 +113,29 @@ func compileSQL(res resolved, syntax sqlSyntax) (Compiled, error) {
 	b.WriteString("\nFROM ")
 	b.WriteString(syntax.quoteTable(res.table))
 
+	for _, join := range res.joins {
+		b.WriteString("\n")
+		b.WriteString(sqlJoinKeyword[join.joinType])
+		b.WriteString(" ")
+		b.WriteString(syntax.quoteTable(join.table))
+		b.WriteString(" ON ")
+		for i, cond := range join.on {
+			if i > 0 {
+				b.WriteString(" AND ")
+			}
+			b.WriteString(sqlColumnRef(cond.left, syntax, true))
+			b.WriteString(" = ")
+			b.WriteString(sqlColumnRef(cond.right, syntax, true))
+		}
+	}
+
 	if len(res.predicates) > 0 {
 		b.WriteString("\nWHERE ")
 		for i, predicate := range res.predicates {
 			if i > 0 {
 				b.WriteString(" AND ")
 			}
-			text, err := sqlPredicate(predicate, syntax, bind)
+			text, err := sqlPredicate(predicate, syntax, bind, qualify)
 			if err != nil {
 				return Compiled{}, err
 			}
@@ -118,7 +149,7 @@ func compileSQL(res resolved, syntax sqlSyntax) (Compiled, error) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(sqlFieldExpression(field, syntax))
+			b.WriteString(sqlFieldExpression(field, syntax, qualify))
 		}
 	}
 
@@ -128,7 +159,7 @@ func compileSQL(res resolved, syntax sqlSyntax) (Compiled, error) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
-			b.WriteString(sqlFieldExpression(sort.field, syntax))
+			b.WriteString(sqlFieldExpression(sort.field, syntax, qualify))
 			if sort.descending {
 				b.WriteString(" DESC")
 			} else {
@@ -143,13 +174,24 @@ func compileSQL(res resolved, syntax sqlSyntax) (Compiled, error) {
 	return Compiled{Text: b.String(), Args: args, Columns: res.outputs()}, nil
 }
 
+// sqlColumnRef renders a column, qualified with its table when qualify is set
+// — needed once a join brings a second table's identifiers into the same
+// query, where an unqualified name would be ambiguous to the engine even when
+// this package resolved it unambiguously itself.
+func sqlColumnRef(column resolvedColumn, syntax sqlSyntax, qualify bool) string {
+	if qualify && column.Table != "" {
+		return syntax.quoteTable(column.Table) + "." + syntax.quoteIdentifier(column.Name)
+	}
+	return syntax.quoteIdentifier(column.Name)
+}
+
 // sqlFieldExpression renders a field. The function name comes from sqlFunction,
 // never from the request.
-func sqlFieldExpression(field resolvedField, syntax sqlSyntax) string {
+func sqlFieldExpression(field resolvedField, syntax sqlSyntax, qualify bool) string {
 	if field.counting {
 		return "COUNT(*)"
 	}
-	column := syntax.quoteIdentifier(field.column.Name)
+	column := sqlColumnRef(field.column, syntax, qualify)
 	if field.aggregate == AggregateNone {
 		return column
 	}
@@ -166,8 +208,8 @@ var sqlComparisons = map[Operator]string{
 	OpLessEqual:    "<=",
 }
 
-func sqlPredicate(p predicate, syntax sqlSyntax, bind func(any) string) (string, error) {
-	column := syntax.quoteIdentifier(p.column.Name)
+func sqlPredicate(p predicate, syntax sqlSyntax, bind func(any) string, qualify bool) (string, error) {
+	column := sqlColumnRef(p.column, syntax, qualify)
 
 	if comparison, ok := sqlComparisons[p.operator]; ok {
 		return column + " " + comparison + " " + bind(p.values[0]), nil

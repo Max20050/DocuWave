@@ -11,6 +11,7 @@ import {
   getDataSourceSchema,
   getFieldMapping,
   getLLMConfig,
+  JOIN_TYPES,
   listArchivedReportTemplates,
   listReportTemplates,
   previewReport,
@@ -21,12 +22,14 @@ import {
   type DataSource,
   type DataSourceSchema,
   type FieldMapping,
+  type JoinType,
   type LLMConfig,
   type Operator,
   type OperatorArity,
   type PlaceholderFilter,
   type QueryField,
   type QueryFilter,
+  type QueryJoin,
   type QueryPreview,
   type QuerySort,
   type QuerySpec,
@@ -75,9 +78,16 @@ function hasAISummaryBlock(blocks: { kind: string }[] | undefined): boolean {
 // `name` stays the raw system-field key FieldPicker/FieldOrderPanel and the
 // backend expect in QueryField.column; only the label shown is prettified via
 // the mapping response's systemFields catalog.
+//
+// SQL sources only: joins add each joined table's columns after the base
+// table's own, qualified as "table.column" — the base table's stay bare. This
+// matches how the backend names a joined field's output column (see
+// query.outputName), and how it disambiguates a bare column reference (see
+// query.lookupColumn): unqualified always means the base table.
 function columnMetaFor(
   schema: DataSourceSchema | null,
   table: string,
+  joins: QueryJoin[],
   fieldMapping: FieldMapping | null,
 ): SchemaColumn[] {
   if (!schema) return [];
@@ -94,7 +104,183 @@ function columnMetaFor(
     }
     return columns;
   }
-  return schema.tables?.find((candidate) => candidate.name === table)?.columns ?? [];
+  const columns = schema.tables?.find((candidate) => candidate.name === table)?.columns ?? [];
+  const joined = joins.flatMap((join) => {
+    const cols = schema.tables?.find((candidate) => candidate.name === join.table)?.columns ?? [];
+    return cols.map((c) => ({ name: `${join.table}.${c.name}`, type: c.type }));
+  });
+  return [...columns, ...joined];
+}
+
+// joinScopeColumns lists the columns available to the left side of one join's
+// condition: the base table's own (bare), plus every earlier join's (qualified
+// "table.column") — never the join being edited itself, and never a later
+// one, matching the backend's own rule that a join's left side can only name
+// something already in the query by that point (see query.columnsFor).
+function joinScopeColumns(
+  schema: DataSourceSchema,
+  table: string,
+  joins: QueryJoin[],
+  uptoIndex: number,
+): { value: string; label: string }[] {
+  const base = schema.tables?.find((candidate) => candidate.name === table)?.columns ?? [];
+  const out = base.map((c) => ({ value: c.name, label: `${table}.${c.name}` }));
+  for (let i = 0; i < uptoIndex; i++) {
+    const join = joins[i];
+    const cols = schema.tables?.find((candidate) => candidate.name === join.table)?.columns ?? [];
+    for (const c of cols) out.push({ value: `${join.table}.${c.name}`, label: `${join.table}.${c.name}` });
+  }
+  return out;
+}
+
+// JoinEditor lets the user bring in more tables, each matched to what's
+// already in the query by one or more equal-column conditions — the shape a
+// report like "sales by rep, and which supplier served them best" needs: join
+// sales to suppliers on supplier_id, then pick fields from either table.
+function JoinEditor({
+  schema,
+  table,
+  joins,
+  onChange,
+}: {
+  schema: DataSourceSchema;
+  table: string;
+  joins: QueryJoin[];
+  onChange: (joins: QueryJoin[]) => void;
+}) {
+  const usedTables = new Set([table, ...joins.map((j) => j.table)]);
+  const availableTables = (schema.tables ?? []).filter((t) => !usedTables.has(t.name));
+
+  function update(index: number, join: QueryJoin) {
+    onChange(joins.map((j, i) => (i === index ? join : j)));
+  }
+  function remove(index: number) {
+    onChange(joins.filter((_, i) => i !== index));
+  }
+  function add() {
+    const next = availableTables[0];
+    if (!next) return;
+    onChange([...joins, { table: next.name, type: "inner", on: [{ left: "", right: "" }] }]);
+  }
+
+  if (!table) return null;
+
+  return (
+    <fieldset className="flex flex-col gap-3">
+      <legend className="text-sm font-medium">Joins</legend>
+      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+        Bring in columns from other tables, matched by equal columns — e.g. join suppliers to
+        sales on supplier_id to see which supplier serves each rep best.
+      </p>
+      {joins.map((join, index) => {
+        // Re-picking a table the user already joined (via the dropdown below)
+        // would silently merge two joins into one; excluding tables used by
+        // *other* joins from this one's own options, while still listing this
+        // join's current table, keeps the dropdown honest without losing the
+        // selection.
+        const tableOptions = [
+          join.table,
+          ...availableTables.map((t) => t.name).filter((name) => name !== join.table),
+        ];
+        const scopeColumns = joinScopeColumns(schema, table, joins, index);
+        const joinTableColumns = schema.tables?.find((t) => t.name === join.table)?.columns ?? [];
+        return (
+          <div
+            key={index}
+            className="flex flex-col gap-2 rounded border border-black/[.1] p-3 dark:border-white/[.15]"
+          >
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                value={join.type ?? "inner"}
+                onChange={(e) => update(index, { ...join, type: e.target.value as JoinType })}
+                className={smallInputClass}
+              >
+                {JOIN_TYPES.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+              <span className="text-sm">join</span>
+              <select
+                value={join.table}
+                onChange={(e) => update(index, { ...join, table: e.target.value, on: [{ left: "", right: "" }] })}
+                className={smallInputClass}
+              >
+                {tableOptions.map((name) => (
+                  <option key={name} value={name}>
+                    {name}
+                  </option>
+                ))}
+              </select>
+              <button type="button" onClick={() => remove(index)} className={removeButtonClass}>
+                Remove
+              </button>
+            </div>
+            {join.on.map((cond, condIndex) => (
+              <div key={condIndex} className="flex flex-wrap items-center gap-2 pl-2 text-sm">
+                <span className="text-xs text-zinc-500 dark:text-zinc-400">on</span>
+                <select
+                  value={cond.left}
+                  onChange={(e) => {
+                    const on = join.on.map((c, i) => (i === condIndex ? { ...c, left: e.target.value } : c));
+                    update(index, { ...join, on });
+                  }}
+                  className={smallInputClass}
+                >
+                  <option value="">column…</option>
+                  {scopeColumns.map((c) => (
+                    <option key={c.value} value={c.value}>
+                      {c.label}
+                    </option>
+                  ))}
+                </select>
+                <span>=</span>
+                <select
+                  value={cond.right}
+                  onChange={(e) => {
+                    const on = join.on.map((c, i) => (i === condIndex ? { ...c, right: e.target.value } : c));
+                    update(index, { ...join, on });
+                  }}
+                  className={smallInputClass}
+                >
+                  <option value="">column…</option>
+                  {joinTableColumns.map((c) => (
+                    <option key={c.name} value={c.name}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+                {join.on.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => update(index, { ...join, on: join.on.filter((_, i) => i !== condIndex) })}
+                    className={removeButtonClass}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+            <div>
+              <button
+                type="button"
+                onClick={() => update(index, { ...join, on: [...join.on, { left: "", right: "" }] })}
+                className={removeButtonClass}
+              >
+                Add condition
+              </button>
+            </div>
+          </div>
+        );
+      })}
+      <div>
+        <button type="button" onClick={add} disabled={availableTables.length === 0} className={removeButtonClass}>
+          Add join
+        </button>
+      </div>
+    </fieldset>
+  );
 }
 
 function operatorArity(operator: Operator): OperatorArity {
@@ -766,7 +952,7 @@ export function ReportBuilder({
     };
   }, [token, dataSourceId, schema?.type]);
 
-  const columnMeta = columnMetaFor(schema, spec.table ?? "", fieldMapping);
+  const columnMeta = columnMetaFor(schema, spec.table ?? "", spec.joins ?? [], fieldMapping);
   const columns = columnMeta.map((c) => c.name);
 
   // needsAIProvider blocks saving before the request would fail: whichever
@@ -1037,6 +1223,15 @@ export function ReportBuilder({
               </select>
             </div>
           )}
+
+          {schema && schema.type !== "google_sheets" && schema.type !== "rest_api" && (spec.table ?? "") !== "" && (
+            <JoinEditor
+              schema={schema}
+              table={spec.table ?? ""}
+              joins={spec.joins ?? []}
+              onChange={(joins) => setSpec({ ...spec, joins })}
+            />
+          )}
         </div>
       )}
 
@@ -1067,7 +1262,11 @@ export function ReportBuilder({
             <>
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
                 <FieldPicker
-                  tableLabel={schema.type === "google_sheets" ? "sheet" : spec.table ?? ""}
+                  tableLabel={
+                    schema.type === "google_sheets"
+                      ? "sheet"
+                      : [spec.table, ...(spec.joins ?? []).map((j) => j.table)].filter(Boolean).join(", ")
+                  }
                   columns={columnMeta}
                   fields={spec.fields}
                   onChange={(fields) => setSpec({ ...spec, fields })}

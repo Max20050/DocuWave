@@ -20,6 +20,10 @@ type resolvedColumn struct {
 	// Index is the column's position among the source's columns. Sheets
 	// addresses columns by position rather than by name.
 	Index int
+	// Table is the table this column belongs to, empty for sources that have
+	// none (Sheets, REST). It's what a compiler qualifies the column with once
+	// a spec joins more than one table together.
+	Table string
 }
 
 // resolvedField is one selected field of the result.
@@ -46,11 +50,27 @@ type resolvedSort struct {
 	descending bool
 }
 
+// resolvedJoinCondition is one equality proven to reference real columns of
+// the tables on either side of it.
+type resolvedJoinCondition struct {
+	left  resolvedColumn
+	right resolvedColumn
+}
+
+// resolvedJoin is one more table proven to exist, joined by conditions proven
+// to reference real columns of tables already in scope and of itself.
+type resolvedJoin struct {
+	table    string
+	joinType JoinType
+	on       []resolvedJoinCondition
+}
+
 // resolved is a spec proven against a schema and reduced to what a dialect
 // renders. By this point every identifier came from the schema and every value
 // has been coerced to the column's type.
 type resolved struct {
 	table      string
+	joins      []resolvedJoin
 	fields     []resolvedField
 	predicates []predicate
 	sorts      []resolvedSort
@@ -87,19 +107,19 @@ func (r resolved) groupFields() []resolvedField {
 // a dialect can render. Every failure here is the caller's to fix, so they all
 // wrap ErrInvalidSpec with the detail needed to fix them.
 func resolve(spec Spec, schema datasource.Schema, dialect Dialect, now time.Time) (resolved, error) {
-	columns, table, err := columnsFor(spec, schema, dialect)
+	columns, table, joins, err := columnsFor(spec, schema, dialect)
 	if err != nil {
 		return resolved{}, err
 	}
 
-	out := resolved{table: table}
+	out := resolved{table: table, joins: joins}
 
 	if len(spec.Fields) == 0 {
 		return resolved{}, fmt.Errorf("%w: select at least one field", ErrInvalidSpec)
 	}
 	seen := make(map[string]bool, len(spec.Fields))
 	for _, field := range spec.Fields {
-		resolvedField, err := resolveField(field, columns)
+		resolvedField, err := resolveField(field, columns, table)
 		if err != nil {
 			return resolved{}, err
 		}
@@ -124,10 +144,14 @@ func resolve(spec Spec, schema datasource.Schema, dialect Dialect, now time.Time
 	for _, sort := range spec.Sorts {
 		// Ordering by something the query doesn't select isn't portable — and on
 		// a grouped query it isn't answerable — so a sort has to name a field.
-		field, ok := selectedField(out.fields, sort.Column, sort.Aggregate)
+		field, ok := selectedField(out.fields, columns, sort.Column, sort.Aggregate)
 		if !ok {
+			name := sort.Column
+			if name == "" {
+				name = "row_count"
+			}
 			return resolved{}, fmt.Errorf("%w: sorting by %s needs it to be one of the selected fields",
-				ErrInvalidSpec, describeField(sort.Column, sort.Aggregate))
+				ErrInvalidSpec, name)
 		}
 		out.sorts = append(out.sorts, resolvedSort{field: field, descending: sort.Descending})
 	}
@@ -140,18 +164,54 @@ func resolve(spec Spec, schema datasource.Schema, dialect Dialect, now time.Time
 	return out, nil
 }
 
-// columnsFor returns the columns a spec may reference, and the table name to
-// read from. A source that exposes a single sheet has columns but no table.
-func columnsFor(spec Spec, schema datasource.Schema, dialect Dialect) ([]resolvedColumn, string, error) {
+// schemaColumns finds a table by name in the schema and returns its columns,
+// each tagged with the table they belong to.
+func schemaColumns(schema datasource.Schema, tableName string) ([]resolvedColumn, error) {
+	for _, table := range schema.Tables {
+		if table.Name != tableName {
+			continue
+		}
+		if len(table.Columns) == 0 {
+			return nil, fmt.Errorf("%w: table %s has no columns", ErrInvalidSpec, tableName)
+		}
+		columns := make([]resolvedColumn, 0, len(table.Columns))
+		for i, column := range table.Columns {
+			columns = append(columns, resolvedColumn{Name: column.Name, Type: column.Type, Index: i, Table: table.Name})
+		}
+		return columns, nil
+	}
+	// Naming the table back is safe — it's echoed as text in a JSON error, never
+	// compiled — and it's the only way the user knows their schema is stale.
+	return nil, fmt.Errorf("%w: %q is not a table in this data source — refresh its schema", ErrInvalidSpec, tableName)
+}
+
+func resolveJoinType(t JoinType) (JoinType, error) {
+	if t == "" {
+		return JoinInner, nil
+	}
+	if !IsJoinType(t) {
+		return "", fmt.Errorf("%w: %q is not a supported join type", ErrInvalidSpec, t)
+	}
+	return t, nil
+}
+
+// columnsFor returns every column a spec may reference — the base table's,
+// plus each joined table's — the base table's own name, and the joins proven
+// against the schema. A source that exposes a single sheet or a REST resource
+// has columns but no table, and allows no joins.
+func columnsFor(spec Spec, schema datasource.Schema, dialect Dialect) ([]resolvedColumn, string, []resolvedJoin, error) {
 	if dialect == DialectSheets {
+		if len(spec.Joins) > 0 {
+			return nil, "", nil, fmt.Errorf("%w: this data source has no tables to join", ErrInvalidSpec)
+		}
 		if len(schema.Fields) == 0 {
-			return nil, "", fmt.Errorf("%w: the sheet reported no columns — refresh its schema", ErrInvalidSpec)
+			return nil, "", nil, fmt.Errorf("%w: the sheet reported no columns — refresh its schema", ErrInvalidSpec)
 		}
 		columns := make([]resolvedColumn, 0, len(schema.Fields))
 		for i, field := range schema.Fields {
 			columns = append(columns, resolvedColumn{Name: field, Index: i})
 		}
-		return columns, "", nil
+		return columns, "", nil, nil
 	}
 
 	if dialect == DialectREST {
@@ -160,61 +220,138 @@ func columnsFor(spec Spec, schema datasource.Schema, dialect Dialect) ([]resolve
 		// already reduced schema.Fields to — not the raw api_field names
 		// Introspect reports. Index is meaningless here: RunQuery works by
 		// field name, not position, unlike Sheets.
+		if len(spec.Joins) > 0 {
+			return nil, "", nil, fmt.Errorf("%w: this data source has no tables to join", ErrInvalidSpec)
+		}
 		if len(schema.Fields) == 0 {
-			return nil, "", fmt.Errorf("%w: this data source has no mapped fields — map its fields first", ErrInvalidSpec)
+			return nil, "", nil, fmt.Errorf("%w: this data source has no mapped fields — map its fields first", ErrInvalidSpec)
 		}
 		columns := make([]resolvedColumn, 0, len(schema.Fields))
 		for i, field := range schema.Fields {
 			columns = append(columns, resolvedColumn{Name: field, Index: i})
 		}
-		return columns, "", nil
+		return columns, "", nil, nil
 	}
 
 	if spec.Table == "" {
-		return nil, "", fmt.Errorf("%w: choose a table", ErrInvalidSpec)
+		return nil, "", nil, fmt.Errorf("%w: choose a table", ErrInvalidSpec)
 	}
-	for _, table := range schema.Tables {
-		if table.Name != spec.Table {
-			continue
-		}
-		columns := make([]resolvedColumn, 0, len(table.Columns))
-		for i, column := range table.Columns {
-			columns = append(columns, resolvedColumn{Name: column.Name, Type: column.Type, Index: i})
-		}
-		if len(columns) == 0 {
-			return nil, "", fmt.Errorf("%w: table %s has no columns", ErrInvalidSpec, spec.Table)
-		}
-		return columns, table.Name, nil
+	if len(spec.Joins) > MaxJoins {
+		return nil, "", nil, fmt.Errorf("%w: a query cannot join more than %d tables", ErrInvalidSpec, MaxJoins)
 	}
-	// Naming the table back is safe — it's echoed as text in a JSON error, never
-	// compiled — and it's the only way the user knows their schema is stale.
-	return nil, "", fmt.Errorf("%w: %q is not a table in this data source — refresh its schema",
-		ErrInvalidSpec, spec.Table)
+
+	columns, err := schemaColumns(schema, spec.Table)
+	if err != nil {
+		return nil, "", nil, err
+	}
+
+	known := map[string]bool{spec.Table: true}
+	joins := make([]resolvedJoin, 0, len(spec.Joins))
+	for _, j := range spec.Joins {
+		if j.Table == "" {
+			return nil, "", nil, fmt.Errorf("%w: a join needs a table", ErrInvalidSpec)
+		}
+		if known[j.Table] {
+			return nil, "", nil, fmt.Errorf("%w: %q is already part of this query", ErrInvalidSpec, j.Table)
+		}
+		joinType, err := resolveJoinType(j.Type)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		if len(j.On) == 0 {
+			return nil, "", nil, fmt.Errorf("%w: joining %s needs at least one condition", ErrInvalidSpec, j.Table)
+		}
+
+		joinColumns, err := schemaColumns(schema, j.Table)
+		if err != nil {
+			return nil, "", nil, err
+		}
+
+		conditions := make([]resolvedJoinCondition, 0, len(j.On))
+		for _, cond := range j.On {
+			left, err := lookupColumn(columns, cond.Left)
+			if err != nil {
+				return nil, "", nil, fmt.Errorf("joining %s: %w", j.Table, err)
+			}
+			right, err := lookupColumn(joinColumns, cond.Right)
+			if err != nil {
+				return nil, "", nil, fmt.Errorf("joining %s: %w", j.Table, err)
+			}
+			conditions = append(conditions, resolvedJoinCondition{left: left, right: right})
+		}
+
+		joins = append(joins, resolvedJoin{table: j.Table, joinType: joinType, on: conditions})
+		known[j.Table] = true
+		columns = append(columns, joinColumns...)
+	}
+
+	return columns, spec.Table, joins, nil
 }
 
-// lookupColumn finds a column by name. A duplicate name is ambiguous rather
-// than wrong: spreadsheet headers repeat in a way database columns can't.
-func lookupColumn(columns []resolvedColumn, name string) (resolvedColumn, error) {
+// lookupColumn finds a column by name, which may be bare — resolved against
+// every table in scope, so it must be unambiguous there — or qualified as
+// "table.column", needed once more than one joined table shares a column
+// name. Table names are matched longest-prefix first, since a schema-qualified
+// table name (Postgres, outside the default schema) is itself allowed to
+// contain a dot.
+func lookupColumn(columns []resolvedColumn, ref string) (resolvedColumn, error) {
+	if column, ok := lookupQualifiedColumn(columns, ref); ok {
+		return column, nil
+	}
+
 	var found resolvedColumn
 	matches := 0
+	tagged := false
 	for _, column := range columns {
-		if column.Name == name {
+		if column.Name == ref {
 			found = column
 			matches++
+			tagged = tagged || column.Table != ""
 		}
 	}
 	switch matches {
 	case 0:
 		return resolvedColumn{}, fmt.Errorf("%w: %q is not a column in this data source — refresh its schema",
-			ErrInvalidSpec, name)
+			ErrInvalidSpec, ref)
 	case 1:
 		return found, nil
 	default:
-		return resolvedColumn{}, fmt.Errorf("%w: %q appears more than once, so it can't be used", ErrInvalidSpec, name)
+		// A source with no tables (Sheets, REST) can only repeat a name the way
+		// a spreadsheet header does; a source with tables repeats one only by
+		// joining two that both have it, which qualifying resolves.
+		if tagged {
+			return resolvedColumn{}, fmt.Errorf("%w: %q is in more than one joined table — qualify it as table.column",
+				ErrInvalidSpec, ref)
+		}
+		return resolvedColumn{}, fmt.Errorf("%w: %q appears more than once, so it can't be used", ErrInvalidSpec, ref)
 	}
 }
 
-func resolveField(field Field, columns []resolvedColumn) (resolvedField, error) {
+// lookupQualifiedColumn tries ref as "table.column" against the tables columns
+// belong to, picking the longest table name that prefixes it.
+func lookupQualifiedColumn(columns []resolvedColumn, ref string) (resolvedColumn, bool) {
+	bestTable := ""
+	for _, column := range columns {
+		if column.Table == "" || len(column.Table) <= len(bestTable) {
+			continue
+		}
+		if strings.HasPrefix(ref, column.Table+".") {
+			bestTable = column.Table
+		}
+	}
+	if bestTable == "" {
+		return resolvedColumn{}, false
+	}
+	name := ref[len(bestTable)+1:]
+	for _, column := range columns {
+		if column.Table == bestTable && column.Name == name {
+			return column, true
+		}
+	}
+	return resolvedColumn{}, false
+}
+
+func resolveField(field Field, columns []resolvedColumn, baseTable string) (resolvedField, error) {
 	if field.Aggregate != AggregateNone {
 		if _, ok := sqlFunction[field.Aggregate]; !ok {
 			return resolvedField{}, fmt.Errorf("%w: %q is not a supported aggregate", ErrInvalidSpec, field.Aggregate)
@@ -234,7 +371,7 @@ func resolveField(field Field, columns []resolvedColumn) (resolvedField, error) 
 	if err != nil {
 		return resolvedField{}, err
 	}
-	return resolvedField{column: column, aggregate: field.Aggregate, output: outputName(column.Name, field.Aggregate)}, nil
+	return resolvedField{column: column, aggregate: field.Aggregate, output: outputName(column, baseTable, field.Aggregate)}, nil
 }
 
 func fieldAggregateLabel(aggregate Aggregate) string {
@@ -244,27 +381,46 @@ func fieldAggregateLabel(aggregate Aggregate) string {
 	return string(aggregate)
 }
 
-// outputName is the name a field is returned under. Aggregates are prefixed so
-// two measures of one column stay distinct, and so a report's field mapping
-// keeps working across runs.
-func outputName(column string, aggregate Aggregate) string {
+// outputName is the name a field is returned under. A column from a joined
+// table (anything other than the query's own base table) is prefixed with its
+// table, so the same-named column of two tables stays distinct; an aggregate
+// is prefixed too, so two measures of one column stay distinct. Either way a
+// report's field mapping keeps working across runs.
+func outputName(column resolvedColumn, baseTable string, aggregate Aggregate) string {
+	name := column.Name
+	if column.Table != "" && column.Table != baseTable {
+		name = strings.ReplaceAll(column.Table, ".", "_") + "_" + name
+	}
 	if aggregate == AggregateNone {
-		return column
+		return name
 	}
-	return string(aggregate) + "_" + column
+	return string(aggregate) + "_" + name
 }
 
-func describeField(column string, aggregate Aggregate) string {
-	if column == "" {
-		return "row_count"
+// selectedField finds the selected field a sort names, resolving columnRef the
+// same way a Field's own column would be, so a sort can name any selected
+// field — including one from a joined table — without repeating its aggregate
+// disambiguation logic.
+func selectedField(fields []resolvedField, columns []resolvedColumn, columnRef string, aggregate Aggregate) (resolvedField, bool) {
+	if columnRef == "" {
+		if aggregate != AggregateCount {
+			return resolvedField{}, false
+		}
+		for _, field := range fields {
+			if field.counting {
+				return field, true
+			}
+		}
+		return resolvedField{}, false
 	}
-	return outputName(column, aggregate)
-}
 
-func selectedField(fields []resolvedField, column string, aggregate Aggregate) (resolvedField, bool) {
-	want := describeField(column, aggregate)
+	column, err := lookupColumn(columns, columnRef)
+	if err != nil {
+		return resolvedField{}, false
+	}
 	for _, field := range fields {
-		if field.output == want {
+		if !field.counting && field.aggregate == aggregate &&
+			field.column.Table == column.Table && field.column.Name == column.Name {
 			return field, true
 		}
 	}

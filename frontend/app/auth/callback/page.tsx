@@ -4,6 +4,15 @@ import { Suspense, useEffect } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 
+function SigningIn() {
+  return (
+    <div className="flex flex-1 flex-col items-center justify-center gap-3 py-32">
+      <span className="dw-skeleton h-9 w-9 rounded-lg" />
+      <p className="dw-hint">Signing you in…</p>
+    </div>
+  );
+}
+
 function GoogleCallbackContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -19,22 +28,12 @@ function GoogleCallbackContent() {
     router.replace("/dashboard");
   }, [searchParams, setToken, router]);
 
-  return (
-    <div className="flex flex-1 items-center justify-center py-32">
-      <p>Signing you in…</p>
-    </div>
-  );
+  return <SigningIn />;
 }
 
 export default function GoogleCallbackPage() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex flex-1 items-center justify-center py-32">
-          <p>Signing you in…</p>
-        </div>
-      }
-    >
+    <Suspense fallback={<SigningIn />}>
       <GoogleCallbackContent />
     </Suspense>
   );

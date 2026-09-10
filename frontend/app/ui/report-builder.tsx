@@ -41,6 +41,16 @@ import {
 } from "@/lib/api";
 import { QueryPreviewTable } from "@/app/ui/query-preview-table";
 import { DataSourceFieldMappingPanel } from "@/app/ui/data-source-field-mapping";
+import { Icon } from "@/app/ui/icons";
+import {
+  ChoiceCards,
+  CopyButton,
+  Disclosure,
+  Field,
+  Note,
+  Skeleton,
+  Steps,
+} from "@/app/ui/primitives";
 import {
   TemplatePicker,
   defaultTemplateConfig,
@@ -48,10 +58,10 @@ import {
   type CustomTemplateDraft,
 } from "@/app/ui/template-picker";
 
-const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";
+const inputClass = "dw-field";
 const smallInputClass = `${inputClass} py-1 text-sm`;
 const removeButtonClass =
-  "rounded border border-black/[.1] px-2 py-1 text-xs transition-colors hover:bg-black/[.04] dark:border-white/[.15] dark:hover:bg-[#1a1a1a]";
+  "dw-btn dw-btn-sm";
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error ? err.message : fallback;
@@ -168,7 +178,7 @@ function JoinEditor({
   return (
     <fieldset className="flex flex-col gap-3">
       <legend className="text-sm font-medium">Joins</legend>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="text-sm text-muted">
         Bring in columns from other tables, matched by equal columns — e.g. join suppliers to
         sales on supplier_id to see which supplier serves each rep best.
       </p>
@@ -187,7 +197,7 @@ function JoinEditor({
         return (
           <div
             key={index}
-            className="flex flex-col gap-2 rounded border border-black/[.1] p-3 dark:border-white/[.15]"
+            className="flex flex-col gap-2 rounded-md border border-line p-3"
           >
             <div className="flex flex-wrap items-center gap-2">
               <select
@@ -219,7 +229,7 @@ function JoinEditor({
             </div>
             {join.on.map((cond, condIndex) => (
               <div key={condIndex} className="flex flex-wrap items-center gap-2 pl-2 text-sm">
-                <span className="text-xs text-zinc-500 dark:text-zinc-400">on</span>
+                <span className="text-xs text-faint dark:text-faint">on</span>
                 <select
                   value={cond.left}
                   onChange={(e) => {
@@ -310,7 +320,7 @@ function FormatPicker({
   return (
     <fieldset className="flex flex-col gap-2">
       <legend className="text-sm font-medium">Output formats</legend>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="text-sm text-muted">
         Every format you pick is generated each time the report runs.
       </p>
       {REPORT_FORMATS.map((option) => {
@@ -326,7 +336,7 @@ function FormatPicker({
             />
             <span>
               <span className="font-medium">{option.label}</span>{" "}
-              <span className="text-zinc-600 dark:text-zinc-400">{option.description}</span>
+              <span className="text-muted">{option.description}</span>
             </span>
           </label>
         );
@@ -373,33 +383,33 @@ function FieldPicker({
     <div className="flex flex-col gap-3">
       <div>
         <h3 className="text-sm font-medium">Choose what to include</h3>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+        <p className="text-sm text-muted">
           Pick the columns you want in the report.
         </p>
       </div>
       <div className="flex flex-col gap-1">
-        <p className="text-xs font-medium uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+        <p className="text-xs font-medium uppercase tracking-wide text-faint dark:text-faint">
           Fields available in: {tableLabel}
         </p>
-        <div className="flex flex-col divide-y divide-black/[.06] rounded border border-black/[.1] dark:divide-white/[.08] dark:border-white/[.15]">
+        <div className="flex flex-col divide-y divide-line rounded-md border border-line">
           {columns.map((column) => {
             const checked = fields.some((f) => f.column === column.name);
             return (
               <label
                 key={column.name}
-                className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-black/[.03] dark:hover:bg-[#1a1a1a]"
+                className="flex cursor-pointer items-center gap-3 px-3 py-2 text-sm transition-colors hover:bg-surface-2"
               >
                 <input
                   type="checkbox"
                   checked={checked}
                   onChange={(e) => toggle(column.name, e.target.checked)}
                 />
-                <span className="flex h-5 w-6 shrink-0 items-center justify-center rounded bg-black/[.06] text-[10px] font-medium dark:bg-white/[.1]">
+                <span className="flex h-5 w-6 shrink-0 items-center justify-center rounded bg-surface-2 text-[10px] font-medium bg-surface-2">
                   {columnBadge(column.type)}
                 </span>
                 <span className="font-medium">{column.name}</span>
                 {column.type && (
-                  <span className="text-xs text-zinc-500 dark:text-zinc-400">{column.type}</span>
+                  <span className="text-xs text-faint dark:text-faint">{column.type}</span>
                 )}
               </label>
             );
@@ -441,16 +451,16 @@ function FieldOrderPanel({
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-sm font-medium">Your report</h3>
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">Drag to reorder.</p>
+          <p className="text-sm text-muted">Drag to reorder.</p>
         </div>
         {fields.length > 0 && (
-          <button type="button" onClick={() => onChange([])} className="text-xs text-red-600 hover:underline">
+          <button type="button" onClick={() => onChange([])} className="text-xs text-danger hover:underline">
             Clear all
           </button>
         )}
       </div>
       {fields.length === 0 ? (
-        <p className="rounded border border-dashed border-black/[.1] px-3 py-6 text-center text-sm text-zinc-500 dark:border-white/[.15] dark:text-zinc-400">
+        <p className="rounded border border-dashed border-line px-3 py-6 text-center text-sm text-faint dark:text-faint">
           Check fields on the left to add them here.
         </p>
       ) : (
@@ -467,11 +477,11 @@ function FieldOrderPanel({
                 setDragIndex(null);
               }}
               onDragEnd={() => setDragIndex(null)}
-              className={`flex items-center gap-2 rounded border border-black/[.1] bg-black/[.02] px-2 py-2 dark:border-white/[.15] dark:bg-white/[.03] ${
-                dragIndex === index ? "opacity-50" : ""
-              }`}
+              className={`flex items-center gap-2 rounded-md border border-line bg-surface-2 px-2 py-2 ${
+ dragIndex === index ? "opacity-50" : ""
+ }`}
             >
-              <span className="cursor-grab select-none text-zinc-400" aria-hidden>
+              <span className="cursor-grab select-none text-faint" aria-hidden>
                 ⋮⋮
               </span>
               <span className="min-w-0 flex-1 truncate text-sm font-medium">
@@ -716,7 +726,7 @@ function PlaceholderFilterEditor({
   return (
     <fieldset className="flex flex-col gap-2">
       <legend className="text-sm font-medium">Inputs</legend>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="text-sm text-muted">
         Filters filled in from the recipient a report is sent to, once that&apos;s set up — not from a
         value you type now.
       </p>
@@ -770,63 +780,72 @@ function PlaceholderFilterEditor({
   );
 }
 
+// The rail down the left of the builder. Each hint says what that stage is
+// for, so the shape of the whole task is readable before any of it is done —
+// the shared Steps component in app/ui/primitives.tsx draws it and enforces
+// that a locked step can't be jumped to.
 const STEPS = [
-  { n: 1, label: "Source" },
-  { n: 2, label: "Data" },
-  { n: 3, label: "Design" },
-  { n: 4, label: "Publish" },
-] as const;
+  { n: 1, label: "Source", hint: "Where the rows come from" },
+  { n: 2, label: "Data", hint: "Which rows, and which columns" },
+  { n: 3, label: "Design", hint: "How the page looks" },
+  { n: 4, label: "Publish", hint: "Name it and pick formats" },
+];
 
-// StepIndicator shows where the user is in the wizard and lets them jump back
-// to any step already reached — but not ahead of maxUnlocked, which the
-// wizard derives from what's actually been completed so far.
-function StepIndicator({
-  currentStep,
-  maxUnlocked,
-  onSelect,
+// The one-line instruction shown above each stage's controls.
+const STEP_LEAD: Record<number, string> = {
+  1: "Pick the connector this report reads from. For a database, choose the table too.",
+  2: "Choose the columns you want, narrow the rows, then run a preview to see what comes back.",
+  3: "Pick a layout and map your columns onto it. You can render a preview before committing.",
+  4: "Give the report a name and choose which file formats it can be generated in.",
+};
+
+// TablePicker replaces the table <select>. A database can easily have fifty
+// tables, and a dropdown shows one at a time with no idea how wide any of
+// them is; this lists them with their column count and filters as you type.
+function TablePicker({
+  tables,
+  value,
+  onChange,
 }: {
-  currentStep: number;
-  maxUnlocked: number;
-  onSelect: (step: number) => void;
+  tables: { name: string; columns: SchemaColumn[] }[];
+  value: string;
+  onChange: (table: string) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const visible = tables.filter((table) => table.name.toLowerCase().includes(query.toLowerCase()));
+
   return (
-    <ol className="flex flex-wrap items-center gap-2 text-sm">
-      {STEPS.map((step, index) => {
-        const unlocked = step.n <= maxUnlocked;
-        const active = step.n === currentStep;
-        const completed = step.n < currentStep;
-        return (
-          <li key={step.n} className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => onSelect(step.n)}
-              disabled={!unlocked}
-              className={`flex items-center gap-2 rounded-full px-3 py-1.5 transition-colors disabled:cursor-not-allowed ${
-                active
-                  ? "bg-foreground text-background"
-                  : unlocked
-                    ? "border border-black/[.1] hover:bg-black/[.04] dark:border-white/[.15] dark:hover:bg-[#1a1a1a]"
-                    : "border border-black/[.1] text-zinc-400 dark:border-white/[.15] dark:text-zinc-600"
-              }`}
-            >
-              <span
-                className={`flex h-5 w-5 items-center justify-center rounded-full text-xs ${
-                  active
-                    ? "bg-background text-foreground"
-                    : completed
-                      ? "bg-foreground text-background"
-                      : "bg-black/[.06] dark:bg-white/[.1]"
+    <div className="flex flex-col gap-2">
+      {tables.length > 8 && (
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          placeholder="Filter tables…"
+          className="dw-field dw-field-sm"
+        />
+      )}
+      <ul className="dw-card max-h-56 divide-y divide-line overflow-y-auto">
+        {visible.map((table) => {
+          const selected = table.name === value;
+          return (
+            <li key={table.name}>
+              <button
+                type="button"
+                onClick={() => onChange(table.name)}
+                className={`flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
+                  selected ? "bg-[var(--accent-soft)] text-accent" : "hover:bg-surface-2"
                 }`}
               >
-                {step.n}
-              </span>
-              {step.label}
-            </button>
-            {index < STEPS.length - 1 && <span className="h-px w-6 bg-black/[.1] dark:bg-white/[.15]" />}
-          </li>
-        );
-      })}
-    </ol>
+                <span className="dw-mono flex-1 truncate">{table.name}</span>
+                <span className="dw-hint shrink-0 tabular-nums">{table.columns.length} cols</span>
+                {selected && <Icon.Check size={14} />}
+              </button>
+            </li>
+          );
+        })}
+        {visible.length === 0 && <li className="dw-hint px-3 py-2">No table matches that.</li>}
+      </ul>
+    </div>
   );
 }
 
@@ -1152,7 +1171,7 @@ export function ReportBuilder({
 
   if (sources.length === 0) {
     return (
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="text-sm text-muted">
         Connect a data source before creating a report.
       </p>
     );
@@ -1162,35 +1181,59 @@ export function ReportBuilder({
     spec.fields.length > 0 &&
     (schema?.type === "google_sheets" || schema?.type === "rest_api" || (spec.table ?? "") !== "");
 
+  const isSQL = schema !== null && schema.type !== "google_sheets" && schema.type !== "rest_api";
+
   return (
-    <div className="flex w-full flex-col gap-4">
-      <StepIndicator currentStep={step} maxUnlocked={maxUnlocked} onSelect={setCurrentStep} />
-      {saved && <p className="text-sm text-green-600">Report saved</p>}
+    <div className="grid w-full gap-7 lg:grid-cols-[13rem_minmax(0,1fr)]">
+      <aside className="lg:sticky lg:top-24 lg:self-start">
+        <Steps steps={STEPS} current={step} maxUnlocked={maxUnlocked} onSelect={setCurrentStep} />
+      </aside>
+
+      <div className="flex min-w-0 flex-col gap-5">
+        {saved && <Note kind="ok">Report saved. Start another one below, or head back to the list.</Note>}
+
+        <p className="dw-hint border-l-2 border-accent pl-3">{STEP_LEAD[step]}</p>
 
       {step === 1 && (
-        <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1">
-            <label htmlFor="report-source" className="text-sm font-medium">
-              Data source
-            </label>
-            <select
-              id="report-source"
+        <div className="dw-in flex flex-col gap-5">
+          <Field label="Data source" hint="Which connector this report reads its rows from.">
+            <ChoiceCards
+              columns={2}
               value={dataSourceId}
-              onChange={(e) => handleSourceChange(e.target.value)}
-              className={inputClass}
-            >
-              {sources.map((source) => (
-                <option key={source.id} value={source.id}>
-                  {source.name}
-                </option>
-              ))}
-            </select>
-          </div>
+              onChange={handleSourceChange}
+              options={sources.map((source) => ({
+                value: source.id,
+                label: source.name,
+                description: source.type.replace("_", " "),
+              }))}
+            />
+          </Field>
 
-          <div className="flex flex-col gap-1">
-            <label htmlFor="report-prompt" className="text-sm font-medium">
-              Description (optional)
-            </label>
+          {schemaError && <Note kind="error">{schemaError}</Note>}
+
+          {schema === null && !schemaError && (
+            <div className="flex flex-col gap-1.5">
+              <Skeleton className="h-4 w-32" />
+              <Skeleton className="h-24 w-full" />
+            </div>
+          )}
+
+          {isSQL && (
+            <Field label="Table" hint="The report's starting table. You can join others onto it below.">
+              <TablePicker
+                tables={schema.tables ?? []}
+                value={spec.table ?? ""}
+                onChange={(table) => setSpec({ ...emptyQuerySpec(), table })}
+              />
+            </Field>
+          )}
+
+          <Field
+            label="Description"
+            htmlFor="report-prompt"
+            optional
+            hint="A note to yourself about what this report answers. It shows in the list."
+          >
             <textarea
               id="report-prompt"
               rows={2}
@@ -1199,30 +1242,7 @@ export function ReportBuilder({
               placeholder="Sum of sales by region for last month"
               className={inputClass}
             />
-          </div>
-
-          {schemaError && <p className="text-sm text-red-600">{schemaError}</p>}
-
-          {schema && schema.type !== "google_sheets" && schema.type !== "rest_api" && (
-            <div className="flex flex-col gap-1">
-              <label htmlFor="report-table" className="text-sm font-medium">
-                Table
-              </label>
-              <select
-                id="report-table"
-                value={spec.table ?? ""}
-                onChange={(e) => setSpec({ ...emptyQuerySpec(), table: e.target.value })}
-                className={inputClass}
-              >
-                <option value="">Select a table…</option>
-                {(schema.tables ?? []).map((table) => (
-                  <option key={table.name} value={table.name}>
-                    {table.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          )}
+          </Field>
 
           {schema && schema.type !== "google_sheets" && schema.type !== "rest_api" && (spec.table ?? "") !== "" && (
             <JoinEditor
@@ -1238,10 +1258,10 @@ export function ReportBuilder({
       {step === 2 && schema && (
         <div className="flex flex-col gap-4">
           {schema.type === "rest_api" && (
-            <div className="flex flex-col gap-2 rounded border border-black/[.1] p-4 dark:border-white/[.15]">
+            <div className="flex flex-col gap-2 rounded-md border border-line p-4">
               <div>
                 <h3 className="text-sm font-medium">Map API fields to system fields</h3>
-                <p className="text-sm text-zinc-600 dark:text-zinc-400">
+                <p className="text-sm text-muted">
                   Connect this source&apos;s detected fields to DocuWave&apos;s system fields — only mapped
                   fields can be picked below.
                 </p>
@@ -1254,7 +1274,7 @@ export function ReportBuilder({
                   setFieldMapping((prev) => (prev ? { ...prev, mapping } : prev))
                 }
               />
-              {fieldMappingError && <p className="text-sm text-red-600">{fieldMappingError}</p>}
+              {fieldMappingError && <p className="text-sm text-danger">{fieldMappingError}</p>}
             </div>
           )}
 
@@ -1301,29 +1321,51 @@ export function ReportBuilder({
             </>
           )}
 
-          <div>
+          {/* Running the preview is what unlocks the rest of the wizard, so
+              it gets its own strip rather than being one more button. */}
+          <div className="dw-card flex flex-wrap items-center gap-3 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="dw-h2">Run a preview</p>
+              <p className="dw-hint mt-0.5">
+                {canPreview
+                  ? "Fetches the first rows so you can check the result before designing the layout."
+                  : "Pick at least one column above first."}
+              </p>
+            </div>
             <button
               type="button"
               onClick={handlePreview}
               disabled={previewing || !canPreview}
-              className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
+              className="dw-btn dw-btn-primary"
             >
-              {previewing ? "Running…" : "Run preview"}
+              {previewing ? (
+                <span className="animate-spin">
+                  <Icon.Refresh size={13} />
+                </span>
+              ) : (
+                <Icon.Play size={13} />
+              )}
+              {previewing ? "Running…" : preview ? "Run again" : "Run preview"}
             </button>
           </div>
-          {previewError && <p className="text-sm text-red-600">{previewError}</p>}
+
+          {previewError && <Note kind="error">{previewError}</Note>}
           {preview && (
-            <>
+            <div className="dw-in flex flex-col gap-2">
               <QueryPreviewTable preview={preview} />
-              <p className="font-mono text-xs text-zinc-500 dark:text-zinc-400">{preview.sql}</p>
-            </>
+              <Disclosure summary="Compiled query" right={<CopyButton value={preview.sql} />}>
+                <pre className="dw-well dw-mono overflow-x-auto px-3 py-2 whitespace-pre-wrap">
+                  {preview.sql}
+                </pre>
+              </Disclosure>
+            </div>
           )}
         </div>
       )}
 
       {step === 3 && schema && (
-        <div className="flex flex-col gap-4">
-          {templatesError && <p className="text-sm text-red-600">{templatesError}</p>}
+        <div className="dw-in flex flex-col gap-4">
+          {templatesError && <Note kind="error">{templatesError}</Note>}
 
           {preview && (
             <TemplatePicker
@@ -1351,23 +1393,35 @@ export function ReportBuilder({
           )}
 
           {needsAIProvider && (
-            <p className="text-sm text-amber-600 dark:text-amber-500">
-              This template uses an AI summary block. Configure an LLM provider in settings before
-              saving this report.
-            </p>
+            <Note kind="warn">
+              This template uses an AI summary block, which needs an AI provider. Add a key in
+              Settings before saving this report.
+            </Note>
           )}
 
-          <div>
+          <div className="dw-card flex flex-wrap items-center gap-3 px-4 py-3">
+            <div className="min-w-0 flex-1">
+              <p className="dw-h2">See the finished page</p>
+              <p className="dw-hint mt-0.5">Renders the real layout with the rows you previewed.</p>
+            </div>
             <button
               type="button"
               onClick={handlePreviewLayout}
               disabled={rendering || templateId === ""}
-              className="rounded-full border border-black/[.08] px-5 py-2 transition-colors hover:bg-black/[.04] disabled:opacity-50 dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
+              className="dw-btn"
             >
+              {rendering ? (
+                <span className="animate-spin">
+                  <Icon.Refresh size={13} />
+                </span>
+              ) : (
+                <Icon.Play size={13} />
+              )}
               {rendering ? "Rendering…" : "Preview layout"}
             </button>
           </div>
-          {layoutError && <p className="text-sm text-red-600">{layoutError}</p>}
+
+          {layoutError && <Note kind="error">{layoutError}</Note>}
           {layout !== null && (
             <iframe
               title="Report layout preview"
@@ -1375,67 +1429,98 @@ export function ReportBuilder({
               // The document is the user's own data rendered by the server;
               // an empty sandbox keeps it from doing anything but display.
               sandbox=""
-              className="h-96 w-full rounded border border-black/[.1] dark:border-white/[.15]"
+              className="dw-in h-[30rem] w-full rounded-md border border-line bg-white"
             />
           )}
         </div>
       )}
 
       {step === 4 && (
-        <div className="flex flex-col gap-4">
-          <FormatPicker formats={formats} onChange={setFormats} />
-
-          <div className="flex flex-col gap-1">
-            <label htmlFor="report-name" className="text-sm font-medium">
-              Report name
-            </label>
+        <div className="dw-in flex flex-col gap-5">
+          <Field label="Report name" htmlFor="report-name" hint="How it appears in your report list.">
             <input
               id="report-name"
               value={name}
               onChange={(e) => setName(e.target.value)}
+              placeholder="Monthly sales by region"
               className={inputClass}
             />
+          </Field>
+
+          <FormatPicker formats={formats} onChange={setFormats} />
+
+          {/* A last read-back of what's about to be saved, so publishing
+              isn't a leap of faith three steps after the choices were made. */}
+          <div className="dw-well flex flex-col gap-1.5 px-4 py-3">
+            <p className="dw-eyebrow">Summary</p>
+            <dl className="grid grid-cols-[7rem_1fr] gap-x-3 gap-y-1 text-sm">
+              <dt className="text-muted">Source</dt>
+              <dd className="truncate">{sources.find((s) => s.id === dataSourceId)?.name}</dd>
+              <dt className="text-muted">Columns</dt>
+              <dd>{spec.fields.length}</dd>
+              <dt className="text-muted">Preview rows</dt>
+              <dd className="tabular-nums">{preview?.rows.length ?? 0}</dd>
+              <dt className="text-muted">Layout</dt>
+              <dd className="truncate">{templates.find((t) => t.id === templateId)?.name ?? "—"}</dd>
+            </dl>
           </div>
-          <div>
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={
-                saving ||
-                name.trim() === "" ||
-                preview === null ||
-                templateId === "" ||
-                formats.length === 0 ||
-                needsAIProvider
-              }
-              className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
-            >
-              {saving ? "Saving…" : "Save report"}
-            </button>
-          </div>
-          {saveError && <p className="text-sm text-red-600">{saveError}</p>}
+
+          {saveError && <Note kind="error">{saveError}</Note>}
         </div>
       )}
 
-      <div className="flex justify-between border-t border-black/[.1] pt-4 dark:border-white/[.15]">
+      {/* The footer stays put while a step scrolls, so the way forward is
+          always in the same place. */}
+      <div className="sticky bottom-0 flex items-center justify-between gap-3 border-t border-line bg-bg py-3">
         <button
           type="button"
           onClick={() => setCurrentStep((s) => Math.max(1, s - 1))}
           disabled={step === 1}
-          className={`${removeButtonClass} disabled:opacity-50`}
+          className="dw-btn"
         >
+          <Icon.ArrowLeft size={14} />
           Back
         </button>
-        {step < 4 && (
+
+        {step < 4 ? (
+          <div className="flex items-center gap-3">
+            {step >= maxUnlocked && (
+              <span className="dw-hint hidden sm:block">
+                {step === 1
+                  ? "Choose a table to continue"
+                  : step === 2
+                    ? "Run a preview to continue"
+                    : "Pick a layout to continue"}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => setCurrentStep((s) => Math.min(4, s + 1))}
+              disabled={step >= maxUnlocked}
+              className="dw-btn dw-btn-primary"
+            >
+              Next
+              <Icon.ChevronRight size={14} />
+            </button>
+          </div>
+        ) : (
           <button
             type="button"
-            onClick={() => setCurrentStep((s) => Math.min(4, s + 1))}
-            disabled={step >= maxUnlocked}
-            className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
+            onClick={handleSave}
+            disabled={
+              saving ||
+              name.trim() === "" ||
+              preview === null ||
+              templateId === "" ||
+              formats.length === 0 ||
+              needsAIProvider
+            }
+            className="dw-btn dw-btn-primary"
           >
-            Next
+            {saving ? "Saving…" : "Save report"}
           </button>
         )}
+      </div>
       </div>
     </div>
   );

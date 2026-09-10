@@ -2,12 +2,14 @@
 
 import { useState, type FormEvent } from "react";
 import type { RecipientInput } from "@/lib/api";
-
-const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";
-const removeButtonClass =
-  "rounded border border-black/[.1] px-2 py-1 text-xs transition-colors hover:bg-black/[.04] dark:border-white/[.15] dark:hover:bg-[#1a1a1a]";
+import { Field, Note } from "@/app/ui/primitives";
+import { Icon } from "@/app/ui/icons";
 
 type AttributeRow = { key: string; value: string };
+
+// Common attribute names, offered as one-click starters so the first thing a
+// user sees isn't two empty boxes labelled "key" and "value".
+const SUGGESTED_KEYS = ["region", "department", "country", "team"];
 
 export function RecipientForm({ onCreate }: { onCreate: (input: RecipientInput) => Promise<void> }) {
   const [email, setEmail] = useState("");
@@ -22,9 +24,11 @@ export function RecipientForm({ onCreate }: { onCreate: (input: RecipientInput) 
   function removeAttribute(index: number) {
     setAttributes(attributes.filter((_, i) => i !== index));
   }
-  function addAttribute() {
-    setAttributes([...attributes, { key: "", value: "" }]);
+  function addAttribute(key = "") {
+    setAttributes([...attributes, { key, value: "" }]);
   }
+
+  const usedKeys = new Set(attributes.map((row) => row.key));
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -46,73 +50,85 @@ export function RecipientForm({ onCreate }: { onCreate: (input: RecipientInput) 
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex w-full max-w-md flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <label htmlFor="recipient-email" className="text-sm font-medium">
-          Email
-        </label>
+    <form onSubmit={handleSubmit} className="flex w-full flex-col gap-5">
+      <Field label="Email" htmlFor="recipient-email">
         <input
           id="recipient-email"
           type="email"
           required
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          className={inputClass}
+          placeholder="person@company.com"
+          className="dw-field"
         />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="recipient-name" className="text-sm font-medium">
-          Name
-        </label>
+      </Field>
+
+      <Field label="Name" htmlFor="recipient-name" optional>
         <input
           id="recipient-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className={inputClass}
+          className="dw-field"
         />
-      </div>
+      </Field>
 
-      <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium">Attributes</legend>
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">
-          Free-form values a report&apos;s inputs can filter by, e.g. region or department.
-        </p>
-        {attributes.map((row, index) => (
-          <div key={index} className="flex items-center gap-2">
-            <input
-              value={row.key}
-              onChange={(e) => updateAttribute(index, { ...row, key: e.target.value })}
-              placeholder="key"
-              className={`${inputClass} py-1 text-sm`}
-            />
-            <input
-              value={row.value}
-              onChange={(e) => updateAttribute(index, { ...row, value: e.target.value })}
-              placeholder="value"
-              className={`${inputClass} py-1 text-sm`}
-            />
-            <button type="button" onClick={() => removeAttribute(index)} className={removeButtonClass}>
-              Remove
+      <Field
+        label="Attributes"
+        optional
+        hint="Values a report's inputs can filter by, so one report can go out personalised per person."
+      >
+        <div className="flex flex-col gap-2">
+          {attributes.map((row, index) => (
+            <div key={index} className="dw-in flex items-center gap-2">
+              <input
+                value={row.key}
+                onChange={(e) => updateAttribute(index, { ...row, key: e.target.value })}
+                placeholder="key"
+                className="dw-field dw-field-sm w-1/3"
+              />
+              <span className="text-faint">=</span>
+              <input
+                value={row.value}
+                onChange={(e) => updateAttribute(index, { ...row, value: e.target.value })}
+                placeholder="value"
+                className="dw-field dw-field-sm flex-1"
+              />
+              <button
+                type="button"
+                onClick={() => removeAttribute(index)}
+                aria-label="Remove attribute"
+                className="dw-btn dw-btn-sm dw-btn-quiet"
+              >
+                <Icon.X size={13} />
+              </button>
+            </div>
+          ))}
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {SUGGESTED_KEYS.filter((key) => !usedKeys.has(key)).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => addAttribute(key)}
+                className="dw-btn dw-btn-sm dw-btn-quiet"
+              >
+                <Icon.Plus size={12} />
+                {key}
+              </button>
+            ))}
+            <button type="button" onClick={() => addAttribute()} className="dw-btn dw-btn-sm">
+              <Icon.Plus size={12} />
+              Custom
             </button>
           </div>
-        ))}
-        <div>
-          <button type="button" onClick={addAttribute} className={removeButtonClass}>
-            Add attribute
-          </button>
         </div>
-      </fieldset>
+      </Field>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      <div>
-        <button
-          type="submit"
-          disabled={pending}
-          className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
-        >
-          {pending ? "Saving…" : "Save recipient"}
-        </button>
-      </div>
+      {error && <Note kind="error">{error}</Note>}
+
+      <button type="submit" disabled={pending} className="dw-btn dw-btn-primary">
+        {pending ? "Saving…" : "Add recipient"}
+      </button>
     </form>
   );
 }

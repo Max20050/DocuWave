@@ -2,11 +2,8 @@ import { API_URL } from "@/lib/api";
 
 export function GoogleSignInButton() {
   return (
-    <a
-      href={`${API_URL}/api/auth/google/login`}
-      className="flex w-full max-w-sm items-center justify-center gap-2 rounded-full border border-black/[.1] px-5 py-2 transition-colors hover:bg-black/[.03] dark:border-white/[.15] dark:hover:bg-white/[.06]"
-    >
-      <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+    <a href={`${API_URL}/api/auth/google/login`} className="dw-btn w-full">
+      <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
         <path
           fill="#4285F4"
           d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.44c-.29 1.48-1.14 2.73-2.42 3.58v2.98h3.93c2.3-2.12 3.54-5.24 3.54-8.8z"

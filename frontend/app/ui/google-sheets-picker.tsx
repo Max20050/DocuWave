@@ -6,9 +6,12 @@ import {
   type GoogleSheetsDataSourceInput,
   type GoogleSheetsSpreadsheet,
 } from "@/lib/api";
+import { Field, Note, Skeleton } from "@/app/ui/primitives";
+import { Icon } from "@/app/ui/icons";
 
-const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";
-
+// GoogleSheetsPicker lists the spreadsheets the connected account can see and
+// has the user click one, rather than hunting through a dropdown. Picking a
+// sheet also names the connector, so the common case is one click and save.
 export function GoogleSheetsPicker({
   token,
   connectionId,
@@ -19,6 +22,7 @@ export function GoogleSheetsPicker({
   onCreate: (input: GoogleSheetsDataSourceInput) => Promise<void>;
 }) {
   const [sheets, setSheets] = useState<GoogleSheetsSpreadsheet[] | null>(null);
+  const [query, setQuery] = useState("");
   const [name, setName] = useState("");
   const [spreadsheetId, setSpreadsheetId] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -51,63 +55,75 @@ export function GoogleSheetsPicker({
     }
   }
 
-  if (error) {
-    return <p className="text-sm text-red-600">{error}</p>;
-  }
+  if (error && !sheets) return <Note kind="error">{error}</Note>;
 
   if (!sheets) {
-    return <p className="text-sm text-zinc-600 dark:text-zinc-400">Loading your spreadsheets…</p>;
-  }
-
-  if (sheets.length === 0) {
     return (
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
-        No spreadsheets found in the connected account.
-      </p>
+      <div className="flex flex-col gap-2">
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+      </div>
     );
   }
 
+  if (sheets.length === 0) {
+    return <Note>No spreadsheets found in the connected Google account.</Note>;
+  }
+
+  const visible = sheets.filter((sheet) => sheet.name.toLowerCase().includes(query.toLowerCase()));
+
   return (
-    <form onSubmit={handleSubmit} className="flex w-full max-w-md flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <label htmlFor="sheet-select" className="text-sm font-medium">
-          Spreadsheet
-        </label>
-        <select
-          id="sheet-select"
-          value={spreadsheetId}
-          onChange={(e) => {
-            setSpreadsheetId(e.target.value);
-            const sheet = sheets.find((s) => s.id === e.target.value);
-            if (sheet) setName(sheet.name);
-          }}
-          className={inputClass}
-        >
-          {sheets.map((sheet) => (
-            <option key={sheet.id} value={sheet.id}>
-              {sheet.name}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="sheet-name" className="text-sm font-medium">
-          Name
-        </label>
+    <form onSubmit={handleSubmit} className="flex w-full flex-col gap-5">
+      <Field label="Spreadsheet" hint="The first row of the sheet becomes your column names.">
+        {sheets.length > 6 && (
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter…"
+            className="dw-field dw-field-sm mb-2"
+          />
+        )}
+        <ul className="dw-card max-h-64 divide-y divide-line overflow-y-auto">
+          {visible.map((sheet) => {
+            const selected = sheet.id === spreadsheetId;
+            return (
+              <li key={sheet.id}>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSpreadsheetId(sheet.id);
+                    setName(sheet.name);
+                  }}
+                  className={`flex w-full items-center gap-2.5 px-3 py-2.5 text-left text-sm transition-colors ${
+                    selected ? "bg-[var(--accent-soft)] text-accent" : "hover:bg-surface-2"
+                  }`}
+                >
+                  <Icon.Sheet size={15} />
+                  <span className="flex-1 truncate">{sheet.name}</span>
+                  {selected && <Icon.Check size={14} />}
+                </button>
+              </li>
+            );
+          })}
+          {visible.length === 0 && <li className="dw-hint px-3 py-2.5">No spreadsheet matches that.</li>}
+        </ul>
+      </Field>
+
+      <Field label="Connector name" htmlFor="sheet-name">
         <input
           id="sheet-name"
           required
           value={name}
           onChange={(e) => setName(e.target.value)}
-          className={inputClass}
+          className="dw-field"
         />
-      </div>
-      <button
-        type="submit"
-        disabled={pending}
-        className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
-      >
-        {pending ? "Please wait…" : "Use this spreadsheet"}
+      </Field>
+
+      {error && <Note kind="error">{error}</Note>}
+
+      <button type="submit" disabled={pending || spreadsheetId === ""} className="dw-btn dw-btn-primary">
+        {pending ? "Saving…" : "Save connector"}
       </button>
     </form>
   );

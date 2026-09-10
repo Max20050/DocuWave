@@ -14,11 +14,11 @@ import {
   type TemplateSlot,
 } from "@/lib/api";
 
-const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";
+const inputClass = "dw-field";
 const chipButtonClass =
-  "rounded border border-black/[.1] px-2 py-0.5 text-xs transition-colors hover:bg-black/[.04] disabled:opacity-40 dark:border-white/[.15] dark:hover:bg-[#1a1a1a]";
+  "dw-btn dw-btn-sm";
 const smallButtonClass =
-  "rounded border border-black/[.1] px-3 py-1.5 text-xs transition-colors hover:bg-black/[.04] disabled:opacity-40 dark:border-white/[.15] dark:hover:bg-[#1a1a1a]";
+  "dw-btn dw-btn-sm";
 
 // columnsFor reads the columns a data source's schema makes available: a
 // table's own columns for SQL sources, the sheet's header fields for Google
@@ -180,77 +180,90 @@ export function TemplatePicker({
 
   return (
     <div className="flex flex-col gap-4">
-      <fieldset className="flex flex-col gap-2">
-        <legend className="text-sm font-medium">Template</legend>
-        {templates.map((template) => (
-          <div
-            key={template.id}
-            className="flex items-start gap-3 rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15]"
-          >
-            <label className="flex flex-1 cursor-pointer items-start gap-3">
-              <input
-                type="radio"
-                name="report-template"
-                value={template.id}
-                checked={template.id === templateId && customDraft === null}
-                onChange={() => onSelect(template.id)}
-                className="mt-1"
-              />
-              <span>
-                <span className="block text-sm font-medium">
-                  {template.name}
-                  {template.owned && (
-                    <span className="ml-2 rounded bg-black/[.06] px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-zinc-600 dark:bg-white/[.1] dark:text-zinc-400">
-                      Mine
-                    </span>
-                  )}
-                </span>
-                <span className="block text-sm text-zinc-600 dark:text-zinc-400">
-                  {template.description}
-                </span>
-              </span>
-            </label>
-            <span className="flex shrink-0 gap-1">
-              {template.owned && (
-                <button
-                  type="button"
-                  onClick={() => onOpenEditCustomTemplate(template)}
-                  className={chipButtonClass}
+      {/* Whole-row selection rather than a radio dot: the row is the target,
+          and the tick sits where the eye already is once one is chosen. Row
+          actions stay outside the selecting button so archiving a template
+          can't select it by accident. */}
+      <div className="flex flex-col gap-2">
+        <p className="dw-eyebrow">Layout</p>
+        {templates.map((template) => {
+          const isSelected = template.id === templateId && customDraft === null;
+          return (
+            <div
+              key={template.id}
+              className={`dw-card dw-card-hover flex items-start gap-2 px-3 py-2.5 ${
+                isSelected ? "border-accent bg-[var(--accent-soft)]" : ""
+              }`}
+            >
+              <button
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => onSelect(template.id)}
+                className="flex flex-1 items-start gap-2.5 text-left"
+              >
+                <span
+                  className={`mt-0.5 shrink-0 transition-opacity ${
+                    isSelected ? "text-accent opacity-100" : "opacity-0"
+                  }`}
                 >
-                  Rework design
-                </button>
-              )}
-              <button type="button" onClick={() => onArchive(template.id)} className={chipButtonClass}>
-                Archive
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                    <path
+                      d="m5 12.5 4.5 4.5L19 7"
+                      stroke="currentColor"
+                      strokeWidth="2"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
+                </span>
+                <span className="min-w-0">
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    {template.name}
+                    {template.owned && <span className="dw-chip text-[10px] uppercase">Mine</span>}
+                  </span>
+                  <span className="dw-hint block">{template.description}</span>
+                </span>
               </button>
-            </span>
-          </div>
-        ))}
+              <span className="flex shrink-0 gap-1">
+                {template.owned && (
+                  <button
+                    type="button"
+                    onClick={() => onOpenEditCustomTemplate(template)}
+                    className={chipButtonClass}
+                  >
+                    Rework
+                  </button>
+                )}
+                <button type="button" onClick={() => onArchive(template.id)} className={chipButtonClass}>
+                  Archive
+                </button>
+              </span>
+            </div>
+          );
+        })}
 
-        <label
-          className={`flex cursor-pointer items-start gap-3 rounded border border-dashed px-3 py-2 ${
-            buildingNew
-              ? "border-black/[.3] dark:border-white/[.4]"
-              : "border-black/[.2] dark:border-white/[.25]"
+        <button
+          type="button"
+          aria-pressed={buildingNew}
+          onClick={onOpenNewCustomTemplate}
+          className={`dw-card dw-card-hover flex items-start gap-2.5 border-dashed px-3 py-2.5 text-left ${
+            buildingNew ? "border-accent bg-[var(--accent-soft)]" : "border-line-strong"
           }`}
         >
-          <input
-            type="radio"
-            name="report-template"
-            value={BUILD_YOUR_OWN_ID}
-            checked={buildingNew}
-            onChange={onOpenNewCustomTemplate}
-            className="mt-1"
-          />
+          <span className="mt-0.5 shrink-0 text-muted">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+            </svg>
+          </span>
           <span>
             <span className="block text-sm font-medium">Build my own design</span>
-            <span className="block text-sm text-zinc-600 dark:text-zinc-400">
+            <span className="dw-hint block">
               Compose a layout from tables, grouped totals, KPI tiles, and text blocks — save it to
               reuse on future reports.
             </span>
           </span>
-        </label>
-      </fieldset>
+        </button>
+      </div>
 
       {customDraft && (
         <CustomTemplateBuilder
@@ -292,11 +305,11 @@ export function TemplatePicker({
         </div>
       )}
 
-      <div className="flex flex-col gap-2 border-t border-black/[.1] pt-3 dark:border-white/[.15]">
+      <div className="flex flex-col gap-2 border-t border-line pt-3">
         <button
           type="button"
           onClick={() => setShowArchived((open) => !open)}
-          className="self-start text-sm text-zinc-600 underline decoration-dotted hover:text-foreground dark:text-zinc-400"
+          className="self-start dw-link text-sm text-muted decoration-dotted"
         >
           {showArchived ? "Hide archived" : "Show archived"}
           {archivedTemplates.length > 0 ? ` (${archivedTemplates.length})` : ""}
@@ -304,23 +317,23 @@ export function TemplatePicker({
         {showArchived && (
           <div className="flex flex-col gap-2">
             {archivedTemplates.length === 0 && (
-              <p className="text-sm text-zinc-600 dark:text-zinc-400">No archived templates.</p>
+              <p className="text-sm text-muted">No archived templates.</p>
             )}
             {archivedTemplates.map((template) => (
               <div
                 key={template.id}
-                className="flex items-start gap-3 rounded border border-black/[.1] px-3 py-2 opacity-70 dark:border-white/[.15]"
+                className="flex items-start gap-3 rounded-md border border-line px-3 py-2 opacity-70"
               >
                 <span className="flex-1">
                   <span className="block text-sm font-medium">
                     {template.name}
                     {template.owned && (
-                      <span className="ml-2 rounded bg-black/[.06] px-1.5 py-0.5 text-[10px] font-normal uppercase tracking-wide text-zinc-600 dark:bg-white/[.1] dark:text-zinc-400">
+                      <span className="ml-2 dw-chip text-[10px] uppercase tracking-wide">
                         Mine
                       </span>
                     )}
                   </span>
-                  <span className="block text-sm text-zinc-600 dark:text-zinc-400">
+                  <span className="block text-sm text-muted">
                     {template.description}
                   </span>
                 </span>
@@ -386,7 +399,7 @@ function CustomTemplateBuilder({
   }
 
   return (
-    <div className="flex flex-col gap-3 rounded border border-black/[.1] p-3 dark:border-white/[.15]">
+    <div className="flex flex-col gap-3 rounded-md border border-line p-3">
       <div className="flex flex-col gap-1">
         <label htmlFor="custom-template-name" className="text-sm font-medium">
           Design name
@@ -414,7 +427,7 @@ function CustomTemplateBuilder({
       <div className="flex flex-col gap-2">
         <p className="text-sm font-medium">Blocks</p>
         {draft.blocks.length === 0 && (
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          <p className="text-sm text-muted">
             Add a block to start composing your design.
           </p>
         )}
@@ -423,10 +436,10 @@ function CustomTemplateBuilder({
             {draft.blocks.map((block, index) => (
               <li
                 key={block.id}
-                className="flex flex-col gap-2 rounded border border-black/[.1] p-2 dark:border-white/[.15]"
+                className="flex flex-col gap-2 rounded-md border border-line p-2"
               >
                 <div className="flex items-center gap-2">
-                  <span className="shrink-0 rounded bg-black/[.06] px-2 py-0.5 text-[11px] uppercase tracking-wide text-zinc-600 dark:bg-white/[.1] dark:text-zinc-400">
+                  <span className="shrink-0 dw-chip text-[11px] uppercase tracking-wide">
                     {CUSTOM_BLOCK_KINDS.find((k) => k.value === block.kind)?.label ?? block.kind}
                   </span>
                   <input
@@ -476,7 +489,7 @@ function CustomTemplateBuilder({
                 )}
                 {block.kind === "ai-summary" && (
                   <>
-                    <p className="text-xs text-zinc-600 dark:text-zinc-400">
+                    <p className="text-xs text-muted">
                       Which columns to share, and the prompt, are set per report — once this design is
                       saved, they show up in the field mapping step below.
                     </p>
@@ -495,13 +508,13 @@ function CustomTemplateBuilder({
         <AddBlockControl onAdd={addBlock} />
       </div>
 
-      {draft.error && <p className="text-sm text-red-600">{draft.error}</p>}
+      {draft.error && <p className="text-sm text-danger">{draft.error}</p>}
       <div className="flex gap-2">
         <button
           type="button"
           onClick={onSave}
           disabled={draft.saving || draft.name.trim() === ""}
-          className="rounded-full bg-foreground px-4 py-1.5 text-xs text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
+          className="dw-btn dw-btn-primary dw-btn-sm"
         >
           {draft.saving ? "Saving…" : draft.editingId === null ? "Save design" : "Save changes"}
         </button>
@@ -571,7 +584,7 @@ function AISummaryQueriesEditor({
         const available = columnsFor(schema, table);
         const picked = query.spec.fields.map((f) => f.column).filter((c) => c !== "");
         return (
-          <div key={index} className="flex flex-col gap-2 rounded border border-black/[.1] p-2 dark:border-white/[.15]">
+          <div key={index} className="flex flex-col gap-2 rounded-md border border-line p-2">
             <div className="flex items-center gap-2">
               <input
                 value={query.title}
@@ -665,7 +678,7 @@ function AISummaryTestButton({
   }
 
   return (
-    <div className="flex flex-col gap-2 rounded border border-dashed border-black/[.15] p-2 dark:border-white/[.2]">
+    <div className="flex flex-col gap-2 rounded border border-dashed border-line-strong p-2">
       <div>
         <button
           type="button"
@@ -676,8 +689,8 @@ function AISummaryTestButton({
           {loading ? "Generating…" : "Probar resumen"}
         </button>
       </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {result && <p className="whitespace-pre-wrap text-sm text-zinc-700 dark:text-zinc-300">{result}</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
+      {result && <p className="whitespace-pre-wrap text-sm text-ink">{result}</p>}
     </div>
   );
 }
@@ -706,9 +719,9 @@ function SlotControl({
     <div className="flex flex-col gap-1">
       <label htmlFor={controlId} className="text-sm font-medium">
         {slot.label}
-        {!slot.required && <span className="font-normal text-zinc-500"> · optional</span>}
+        {!slot.required && <span className="font-normal text-faint"> · optional</span>}
       </label>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">{slot.description}</p>
+      <p className="text-sm text-muted">{slot.description}</p>
 
       {slot.kind === "text" && (
         <input
@@ -779,7 +792,7 @@ function ColumnListControl({
           {mapped.map((column, index) => (
             <li
               key={column}
-              className="flex items-center justify-between gap-2 rounded border border-black/[.1] px-3 py-1.5 dark:border-white/[.15]"
+              className="flex items-center justify-between gap-2 rounded-md border border-line px-3 py-1.5"
             >
               <span className="font-mono text-xs">{column}</span>
               <span className="flex gap-1">

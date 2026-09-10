@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
+import { LoadingPage } from "@/app/ui/primitives";
 
 export default function Home() {
   const router = useRouter();
@@ -12,9 +13,5 @@ export default function Home() {
     router.replace(token ? "/dashboard" : "/login");
   }, [token, router]);
 
-  return (
-    <div className="flex flex-1 items-center justify-center py-32">
-      <p>Loading…</p>
-    </div>
-  );
+  return <LoadingPage />;
 }

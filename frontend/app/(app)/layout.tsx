@@ -4,6 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { Sidebar } from "@/app/ui/sidebar";
+import { LoadingPage } from "@/app/ui/primitives";
 
 // This layout is the single place that gates every authenticated page behind
 // a session: pages under app/(app)/ no longer each redirect to /login
@@ -19,17 +20,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }, [token, router]);
 
   if (!token) {
-    return (
-      <div className="flex flex-1 items-center justify-center py-32">
-        <p>Loading…</p>
-      </div>
-    );
+    return <LoadingPage />;
   }
 
   return (
     <div className="flex flex-1">
       <Sidebar />
-      <main className="flex flex-1 flex-col">{children}</main>
+      <main className="flex min-w-0 flex-1 flex-col">{children}</main>
     </div>
   );
 }

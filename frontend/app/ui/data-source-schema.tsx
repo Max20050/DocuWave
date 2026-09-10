@@ -7,6 +7,8 @@ import {
   type DataSourceSchema,
   type DataSourceType,
 } from "@/lib/api";
+import { Disclosure, Note, Skeleton } from "@/app/ui/primitives";
+import { Icon } from "@/app/ui/icons";
 
 // DataSourceSchemaView loads and shows the structure of the selected data
 // source: tables and columns for SQL, header/detected fields for Google
@@ -54,34 +56,38 @@ export function DataSourceSchemaView({
   };
 
   const refreshButton = (
-    <button
-      onClick={handleRefresh}
-      disabled={refreshing}
-      className="self-start text-sm underline disabled:opacity-50"
-    >
-      {refreshing ? "Detecting…" : "Detectar campos"}
+    <button onClick={handleRefresh} disabled={refreshing} className="dw-btn dw-btn-sm dw-btn-quiet">
+      <span className={refreshing ? "animate-spin" : ""}>
+        <Icon.Refresh size={13} />
+      </span>
+      {refreshing ? "Detecting…" : "Detect fields"}
     </button>
   );
 
   if (error) {
     return (
-      <div className="flex flex-col gap-2">
-        <p className="text-sm text-red-600">{error}</p>
+      <div className="flex flex-col items-start gap-2">
+        <Note kind="error">{error}</Note>
         {refreshButton}
       </div>
     );
   }
 
   if (!schema) {
-    return <p className="text-sm text-zinc-600 dark:text-zinc-400">Reading schema…</p>;
+    return (
+      <div className="flex flex-col gap-1.5">
+        <Skeleton className="h-4 w-40" />
+        <Skeleton className="h-4 w-64" />
+      </div>
+    );
   }
 
   if (type === "google_sheets" || type === "rest_api") {
     const fields = schema.fields ?? [];
     if (fields.length === 0) {
       return (
-        <div className="flex flex-col gap-2">
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
+        <div className="flex flex-col items-start gap-2">
+          <p className="dw-hint">
             {type === "rest_api" ? "No fields detected yet." : "This sheet has no header row."}
           </p>
           {refreshButton}
@@ -89,17 +95,14 @@ export function DataSourceSchemaView({
       );
     }
     return (
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap gap-2">
+      <div className="flex flex-col items-start gap-3">
+        <div className="flex flex-wrap gap-1.5">
           {fields.map((field, index) => {
             const fieldType = schema.fieldTypes?.[field];
             return (
-              <span
-                key={`${field}-${index}`}
-                className="rounded bg-black/[.05] px-2 py-1 font-mono text-xs dark:bg-white/[.08]"
-              >
+              <span key={`${field}-${index}`} className="dw-chip dw-mono">
                 {field || "(unnamed)"}
-                {fieldType && <span className="text-zinc-500"> {fieldType}</span>}
+                {fieldType && <span className="text-faint">{fieldType}</span>}
               </span>
             );
           })}
@@ -111,27 +114,32 @@ export function DataSourceSchemaView({
 
   if (!schema.tables || schema.tables.length === 0) {
     return (
-      <div className="flex flex-col gap-2">
-        <p className="text-sm text-zinc-600 dark:text-zinc-400">No tables found.</p>
+      <div className="flex flex-col items-start gap-2">
+        <p className="dw-hint">No tables found.</p>
         {refreshButton}
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-3">
-      {schema.tables.map((table) => (
-        <div key={table.name}>
-          <p className="font-mono text-sm font-medium">{table.name}</p>
-          <ul className="mt-1 flex flex-col gap-0.5">
-            {table.columns.map((column) => (
-              <li key={column.name} className="font-mono text-xs text-zinc-600 dark:text-zinc-400">
-                {column.name} <span className="text-zinc-500">{column.type}</span>
-              </li>
-            ))}
-          </ul>
-        </div>
-      ))}
+    <div className="flex flex-col items-start gap-2">
+      <div className="flex w-full flex-col">
+        {schema.tables.map((table) => (
+          <Disclosure
+            key={table.name}
+            summary={`${table.name}  ·  ${table.columns.length} columns`}
+          >
+            <div className="flex flex-wrap gap-1.5 pb-2 pl-5">
+              {table.columns.map((column) => (
+                <span key={column.name} className="dw-chip dw-mono">
+                  {column.name}
+                  <span className="text-faint">{column.type}</span>
+                </span>
+              ))}
+            </div>
+          </Disclosure>
+        ))}
+      </div>
       {refreshButton}
     </div>
   );

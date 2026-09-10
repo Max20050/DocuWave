@@ -167,15 +167,15 @@ export function DataSourceFieldMappingPanel({
   }
 
   if (error && (!mapping || !apiFields)) {
-    return <p className="text-sm text-red-600">{error}</p>;
+    return <p className="text-sm text-danger">{error}</p>;
   }
 
   if (!mapping || !apiFields) {
-    return <p className="text-sm text-zinc-600 dark:text-zinc-400">Loading field mapping…</p>;
+    return <p className="text-sm text-muted">Loading field mapping…</p>;
   }
 
   if (apiFields.length === 0) {
-    return <p className="text-sm text-zinc-600 dark:text-zinc-400">No fields detected yet.</p>;
+    return <p className="text-sm text-muted">No fields detected yet.</p>;
   }
 
   return (
@@ -190,7 +190,7 @@ export function DataSourceFieldMappingPanel({
               }}
               stroke="currentColor"
               strokeWidth={1.5}
-              className="cursor-pointer text-blue-500 [pointer-events:stroke]"
+              className="cursor-pointer text-accent [pointer-events:stroke]"
               onClick={() => disconnect(apiField)}
             />
           ))}
@@ -212,7 +212,7 @@ export function DataSourceFieldMappingPanel({
                 leftRefs.current[field] = el;
               }}
               onMouseDown={() => handleDragStart(field)}
-              className="cursor-grab rounded bg-black/[.05] px-2 py-1 text-right font-mono text-xs active:cursor-grabbing dark:bg-white/[.08]"
+              className="cursor-grab rounded bg-surface-2 px-2 py-1 text-right font-mono text-xs active:cursor-grabbing bg-surface-2"
             >
               {field || "(unnamed)"}
             </div>
@@ -227,7 +227,7 @@ export function DataSourceFieldMappingPanel({
                 rightRefs.current[field.key] = el;
               }}
               onMouseUp={() => handleDrop(field.key)}
-              className="rounded border border-dashed border-black/[.15] px-2 py-1 text-xs dark:border-white/[.2]"
+              className="rounded border border-dashed border-line-strong px-2 py-1 text-xs"
             >
               {field.label}
             </div>
@@ -235,12 +235,12 @@ export function DataSourceFieldMappingPanel({
         </div>
       </div>
 
-      <p className="text-xs text-zinc-500">
+      <p className="text-xs text-faint">
         Arrastrá desde un campo detectado hacia un campo del sistema para conectarlos. Hacé click en una
         línea para eliminar la conexión.
       </p>
-      {saving && <p className="text-xs text-zinc-500">Saving…</p>}
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {saving && <p className="text-xs text-faint">Saving…</p>}
+      {error && <p className="text-sm text-danger">{error}</p>}
     </div>
   );
 }

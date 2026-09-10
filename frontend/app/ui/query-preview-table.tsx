@@ -15,17 +15,22 @@ function formatCell(value: unknown): string {
 // user can judge the query before saving the report.
 export function QueryPreviewTable({ preview }: { preview: QueryPreview }) {
   if (preview.columns.length === 0) {
-    return <p className="text-sm text-zinc-600 dark:text-zinc-400">The query returned no columns.</p>;
+    return <p className="dw-hint">The query returned no columns.</p>;
   }
 
   return (
-    <div className="flex flex-col gap-2">
-      <div className="overflow-x-auto rounded border border-black/[.1] dark:border-white/[.15]">
+    <div className="flex flex-col gap-1.5">
+      <div className="dw-card max-h-80 overflow-auto">
         <table className="w-full border-collapse text-left text-sm">
-          <thead>
-            <tr className="border-b border-black/[.1] dark:border-white/[.15]">
+          {/* The header stays put while a wide result scrolls, so a column
+              five screens down still has a name. */}
+          <thead className="sticky top-0 z-10 bg-surface-2">
+            <tr>
               {preview.columns.map((column, index) => (
-                <th key={`${column}-${index}`} className="px-3 py-2 font-medium whitespace-nowrap">
+                <th
+                  key={`${column}-${index}`}
+                  className="border-b border-line px-3 py-2 text-xs font-medium whitespace-nowrap"
+                >
                   {column}
                 </th>
               ))}
@@ -33,12 +38,12 @@ export function QueryPreviewTable({ preview }: { preview: QueryPreview }) {
           </thead>
           <tbody>
             {preview.rows.map((row, rowIndex) => (
-              <tr
-                key={rowIndex}
-                className="border-b border-black/[.05] last:border-0 dark:border-white/[.08]"
-              >
+              <tr key={rowIndex} className="transition-colors hover:bg-surface-2">
                 {preview.columns.map((_, cellIndex) => (
-                  <td key={cellIndex} className="px-3 py-2 font-mono text-xs whitespace-nowrap">
+                  <td
+                    key={cellIndex}
+                    className="dw-mono border-b border-line px-3 py-1.5 whitespace-nowrap"
+                  >
                     {formatCell(row[cellIndex])}
                   </td>
                 ))}
@@ -47,12 +52,12 @@ export function QueryPreviewTable({ preview }: { preview: QueryPreview }) {
           </tbody>
         </table>
       </div>
-      <p className="text-sm text-zinc-600 dark:text-zinc-400">
+      <p className="dw-hint">
         {preview.rows.length === 0
           ? "The query returned no rows."
           : `${preview.rows.length} row${preview.rows.length === 1 ? "" : "s"}${
-              preview.truncated ? " (preview truncated)" : ""
-            }`}
+              preview.truncated ? " · preview truncated" : ""
+            } · ${preview.columns.length} columns`}
       </p>
     </div>
   );

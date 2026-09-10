@@ -19,14 +19,30 @@ import {
 } from "@/lib/api";
 import { useAuth } from "@/lib/auth-context";
 import { ReportBuilder } from "@/app/ui/report-builder";
+import { Icon } from "@/app/ui/icons";
+import {
+  ConfirmButton,
+  CopyButton,
+  Disclosure,
+  EmptyState,
+  LoadingPage,
+  Note,
+  PageBody,
+  PageHeader,
+} from "@/app/ui/primitives";
+import { useToast } from "@/app/ui/toast";
 
 export default function ReportsPage() {
   const router = useRouter();
+  const toast = useToast();
   const { token, logout } = useAuth();
   const [reports, setReports] = useState<Report[] | null>(null);
   const [sources, setSources] = useState<DataSource[] | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
   const [error, setError] = useState<string | null>(null);
+  // Building takes over the page rather than sitting under the list: the
+  // wizard is a several-minute task and deserves the whole column.
+  const [building, setBuilding] = useState(false);
   // The report being generated, so the button can say so: a download runs the
   // report's query against the user's data source and isn't instant.
   const [running, setRunning] = useState<string | null>(null);
@@ -49,6 +65,8 @@ export default function ReportsPage() {
     if (!token) return;
     await createReport(token, input);
     setReports(await listReports(token));
+    setBuilding(false);
+    toast.ok(`Saved ${input.name}`);
   }
 
   async function handleDownload(report: Report, format: ReportFormat) {
@@ -65,6 +83,7 @@ export default function ReportsPage() {
       link.download = filename;
       link.click();
       URL.revokeObjectURL(url);
+      toast.ok(`${filename} downloaded`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to generate the report");
     } finally {
@@ -72,94 +91,150 @@ export default function ReportsPage() {
     }
   }
 
-  async function handleDelete(id: string) {
+  async function handleDelete(report: Report) {
     if (!token) return;
     setError(null);
     try {
-      await deleteReport(token, id);
+      await deleteReport(token, report.id);
       setReports(await listReports(token));
+      toast.ok(`Removed ${report.name}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to delete report");
     }
   }
 
-  if (!token || !reports || !sources) {
+  if (!token || !reports || !sources) return <LoadingPage />;
+
+  if (building) {
     return (
-      <div className="flex flex-1 items-center justify-center py-32">
-        <p>Loading…</p>
-      </div>
+      <>
+        <PageHeader
+          title="New report"
+          description="Four steps: where the data comes from, what it contains, how it looks, and how it's delivered."
+          back={{ label: "Reports", onClick: () => setBuilding(false) }}
+        />
+        <PageBody wide>
+          <ReportBuilder token={token} sources={sources} onCreate={handleCreate} />
+        </PageBody>
+      </>
     );
   }
 
+  const canBuild = sources.length > 0;
+
   return (
-    <div className="flex flex-1 flex-col items-center gap-10 px-6 py-16">
-      <div className="flex w-full max-w-2xl items-center justify-between">
-        <h1 className="text-2xl font-semibold">Reports</h1>
-      </div>
+    <>
+      <PageHeader
+        title="Reports"
+        count={reports.length}
+        description="Saved queries with a layout, ready to run whenever you need them."
+        action={
+          canBuild && (
+            <button type="button" onClick={() => setBuilding(true)} className="dw-btn dw-btn-primary">
+              <Icon.Plus size={15} />
+              New report
+            </button>
+          )
+        }
+      />
 
-      <div className="flex w-full max-w-2xl flex-col gap-3">
-        {reports.length === 0 && (
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">No reports created yet.</p>
-        )}
-        {reports.map((report) => (
-          <div
-            key={report.id}
-            className="flex flex-col gap-2 rounded border border-black/[.1] px-4 py-3 dark:border-white/[.15]"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <p className="font-medium">{report.name}</p>
-                <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                  {report.dataSourceName} ·{" "}
-                  {templates.find((template) => template.id === report.templateId)?.name ??
-                    report.templateId}{" "}
-                  · {report.prompt}
-                </p>
-              </div>
-              <button
-                onClick={() => handleDelete(report.id)}
-                className="text-sm text-red-600 hover:underline"
-              >
-                Delete
+      <PageBody>
+        {error && <Note kind="error">{error}</Note>}
+
+        {!canBuild ? (
+          <EmptyState
+            icon={<Icon.Plug size={28} />}
+            title="Connect a data source first"
+            body="A report reads its rows from a connector, so there's nothing to build against yet."
+            action={
+              <Link href="/datasources" className="dw-btn dw-btn-primary">
+                Add a connector
+              </Link>
+            }
+          />
+        ) : reports.length === 0 ? (
+          <EmptyState
+            icon={<Icon.Report size={28} />}
+            title="No reports yet"
+            body="Pick the fields you want from a connector, preview the rows, choose a layout, and save it. Running it later is one click."
+            action={
+              <button type="button" onClick={() => setBuilding(true)} className="dw-btn dw-btn-primary">
+                <Icon.Plus size={15} />
+                Build your first report
               </button>
-            </div>
-            <pre className="overflow-x-auto rounded bg-black/[.05] px-3 py-2 font-mono text-xs dark:bg-white/[.08]">
-              {report.query}
-            </pre>
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm text-zinc-600 dark:text-zinc-400">Download</span>
-              {report.formats.map((format) => (
-                <button
-                  key={format}
-                  onClick={() => handleDownload(report, format)}
-                  disabled={running !== null}
-                  className="rounded-full border border-black/[.08] px-3 py-1 text-sm transition-colors hover:bg-black/[.04] disabled:opacity-50 dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
-                >
-                  {running === `${report.id}:${format}`
-                    ? "Generating…"
-                    : (REPORT_FORMATS.find((option) => option.value === format)?.label ?? format)}
-                </button>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {error && <p className="text-sm text-red-600">{error}</p>}
-
-      <div className="flex w-full max-w-2xl flex-col gap-4 border-t border-black/[.1] pt-8 dark:border-white/[.15]">
-        <h2 className="text-lg font-semibold">Create a report</h2>
-        {sources.length === 0 ? (
-          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-            <Link href="/datasources" className="underline">
-              Connect a data source
-            </Link>{" "}
-            before creating a report.
-          </p>
+            }
+          />
         ) : (
-          <ReportBuilder token={token} sources={sources} onCreate={handleCreate} />
+          <ul className="flex flex-col gap-2.5">
+            {reports.map((report) => {
+              const templateName =
+                templates.find((template) => template.id === report.templateId)?.name ?? report.templateId;
+              return (
+                <li key={report.id} className="dw-card dw-card-hover flex flex-col gap-3 px-4 py-3.5">
+                  <div className="flex items-start gap-3">
+                    <span className="mt-0.5 text-faint">
+                      <Icon.Report size={17} />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium">{report.name}</p>
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        <span className="dw-chip">
+                          <Icon.Plug size={11} />
+                          {report.dataSourceName}
+                        </span>
+                        <span className="dw-chip">
+                          <Icon.Grid size={11} />
+                          {templateName}
+                        </span>
+                      </div>
+                      {report.prompt && <p className="dw-hint mt-1.5">{report.prompt}</p>}
+                    </div>
+                    <ConfirmButton label="Remove" onConfirm={() => handleDelete(report)} />
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line pt-2.5">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="dw-hint mr-1">Run and download</span>
+                      {report.formats.map((format) => {
+                        const busy = running === `${report.id}:${format}`;
+                        return (
+                          <button
+                            key={format}
+                            type="button"
+                            onClick={() => handleDownload(report, format)}
+                            disabled={running !== null}
+                            className="dw-btn dw-btn-sm"
+                          >
+                            {busy ? (
+                              <span className="animate-spin">
+                                <Icon.Refresh size={12} />
+                              </span>
+                            ) : (
+                              <Icon.Download size={12} />
+                            )}
+                            {busy
+                              ? "Generating…"
+                              : (REPORT_FORMATS.find((option) => option.value === format)?.label ?? format)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <Disclosure
+                    summary="Compiled query"
+                    right={<CopyButton value={report.query} />}
+                  >
+                    <pre className="dw-well dw-mono overflow-x-auto px-3 py-2 whitespace-pre-wrap">
+                      {report.query}
+                    </pre>
+                  </Disclosure>
+                </li>
+              );
+            })}
+          </ul>
         )}
-      </div>
-    </div>
+      </PageBody>
+    </>
   );
 }

@@ -2,12 +2,14 @@
 
 import { useState, type FormEvent } from "react";
 import type { DataSourceInput } from "@/lib/api";
+import { ChoiceCards, Field, Note } from "@/app/ui/primitives";
+import { Icon } from "@/app/ui/icons";
 
 type SqlDataSourceType = "postgres" | "mysql";
 
-const TYPE_OPTIONS: { value: SqlDataSourceType; label: string }[] = [
-  { value: "postgres", label: "PostgreSQL" },
-  { value: "mysql", label: "MySQL" },
+const ENGINES: { value: SqlDataSourceType; label: string; description: string }[] = [
+  { value: "postgres", label: "PostgreSQL", description: "Port 5432 by default" },
+  { value: "mysql", label: "MySQL", description: "Port 3306 by default" },
 ];
 
 const DEFAULT_PORTS: Record<SqlDataSourceType, number> = {
@@ -15,8 +17,10 @@ const DEFAULT_PORTS: Record<SqlDataSourceType, number> = {
   mysql: 3306,
 };
 
-const inputClass = "rounded border border-black/[.1] px-3 py-2 dark:border-white/[.15] dark:bg-black";
-
+// DataSourceForm collects a SQL connection in the order a person actually
+// thinks about one: which engine, where it lives, then who it lets in. The
+// connection is tested before it can be saved, so a typo surfaces here rather
+// than the first time a report runs against it.
 export function DataSourceForm({
   onTest,
   onCreate,
@@ -31,40 +35,47 @@ export function DataSourceForm({
   const [dbName, setDbName] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [status, setStatus] = useState<string | null>(null);
+  const [tested, setTested] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
   const [pending, setPending] = useState(false);
 
   function currentInput(): DataSourceInput {
     return { name, type, host, port, dbName, username, password };
   }
 
+  // Any edit invalidates a previous green tick — otherwise the form would
+  // claim a connection that was tested against different details.
+  function edit<T>(setter: (value: T) => void) {
+    return (value: T) => {
+      setTested(false);
+      setter(value);
+    };
+  }
+
+  const complete =
+    name.trim() !== "" && host.trim() !== "" && dbName.trim() !== "" && username.trim() !== "";
+
   async function handleTest() {
     setError(null);
-    setStatus(null);
-    setPending(true);
+    setTesting(true);
     try {
       await onTest(currentInput());
-      setStatus("Connection successful");
+      setTested(true);
     } catch (err) {
+      setTested(false);
       setError(err instanceof Error ? err.message : "Connection failed");
     } finally {
-      setPending(false);
+      setTesting(false);
     }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
-    setStatus(null);
     setPending(true);
     try {
       await onCreate(currentInput());
-      setName("");
-      setHost("");
-      setDbName("");
-      setUsername("");
-      setPassword("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong");
     } finally {
@@ -73,121 +84,106 @@ export function DataSourceForm({
   }
 
   return (
-    <form onSubmit={handleSubmit} className="flex w-full max-w-md flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <label htmlFor="ds-name" className="text-sm font-medium">
-          Name
-        </label>
+    <form onSubmit={handleSubmit} className="flex w-full flex-col gap-6">
+      <Field label="Engine" hint="Which database DocuWave should speak to.">
+        <ChoiceCards
+          columns={2}
+          options={ENGINES}
+          value={type}
+          onChange={(next) => {
+            setTested(false);
+            setType(next);
+            setPort(DEFAULT_PORTS[next]);
+          }}
+        />
+      </Field>
+
+      <Field
+        label="Connector name"
+        htmlFor="ds-name"
+        hint="How this connection appears when you pick a source for a report."
+      >
         <input
           id="ds-name"
           required
           value={name}
-          onChange={(e) => setName(e.target.value)}
-          className={inputClass}
+          onChange={(e) => edit(setName)(e.target.value)}
+          placeholder="Production analytics"
+          className="dw-field"
         />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="ds-type" className="text-sm font-medium">
-          Type
-        </label>
-        <select
-          id="ds-type"
-          value={type}
-          onChange={(e) => {
-            const nextType = e.target.value as SqlDataSourceType;
-            setType(nextType);
-            setPort(DEFAULT_PORTS[nextType]);
-          }}
-          className={inputClass}
-        >
-          {TYPE_OPTIONS.map((opt) => (
-            <option key={opt.value} value={opt.value}>
-              {opt.label}
-            </option>
-          ))}
-        </select>
-      </div>
-      <div className="flex gap-4">
-        <div className="flex flex-1 flex-col gap-1">
-          <label htmlFor="ds-host" className="text-sm font-medium">
-            Host
-          </label>
-          <input
-            id="ds-host"
-            required
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            className={inputClass}
-          />
+      </Field>
+
+      <div className="flex flex-col gap-4">
+        <p className="dw-eyebrow">Where it lives</p>
+        <div className="flex gap-3">
+          <Field label="Host" htmlFor="ds-host" className="flex-1">
+            <input
+              id="ds-host"
+              required
+              value={host}
+              onChange={(e) => edit(setHost)(e.target.value)}
+              placeholder="db.example.com"
+              className="dw-field"
+            />
+          </Field>
+          <Field label="Port" htmlFor="ds-port" className="w-24">
+            <input
+              id="ds-port"
+              type="number"
+              required
+              value={port}
+              onChange={(e) => edit(setPort)(Number(e.target.value))}
+              className="dw-field"
+            />
+          </Field>
         </div>
-        <div className="flex w-28 flex-col gap-1">
-          <label htmlFor="ds-port" className="text-sm font-medium">
-            Port
-          </label>
+        <Field label="Database" htmlFor="ds-dbname">
           <input
-            id="ds-port"
-            type="number"
+            id="ds-dbname"
             required
-            value={port}
-            onChange={(e) => setPort(Number(e.target.value))}
-            className={inputClass}
+            value={dbName}
+            onChange={(e) => edit(setDbName)(e.target.value)}
+            className="dw-field"
           />
-        </div>
+        </Field>
       </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="ds-dbname" className="text-sm font-medium">
-          Database name
-        </label>
-        <input
-          id="ds-dbname"
-          required
-          value={dbName}
-          onChange={(e) => setDbName(e.target.value)}
-          className={inputClass}
-        />
+
+      <div className="flex flex-col gap-4">
+        <p className="dw-eyebrow">Credentials</p>
+        <p className="dw-hint -mt-2">
+          Stored encrypted. A read-only user is enough — DocuWave only ever selects.
+        </p>
+        <Field label="Username" htmlFor="ds-username">
+          <input
+            id="ds-username"
+            required
+            value={username}
+            onChange={(e) => edit(setUsername)(e.target.value)}
+            className="dw-field"
+          />
+        </Field>
+        <Field label="Password" htmlFor="ds-password">
+          <input
+            id="ds-password"
+            type="password"
+            required
+            value={password}
+            onChange={(e) => edit(setPassword)(e.target.value)}
+            className="dw-field"
+          />
+        </Field>
       </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="ds-username" className="text-sm font-medium">
-          Username
-        </label>
-        <input
-          id="ds-username"
-          required
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          className={inputClass}
-        />
-      </div>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="ds-password" className="text-sm font-medium">
-          Password
-        </label>
-        <input
-          id="ds-password"
-          type="password"
-          required
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className={inputClass}
-        />
-      </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {status && <p className="text-sm text-green-600">{status}</p>}
-      <div className="flex gap-3">
-        <button
-          type="button"
-          onClick={handleTest}
-          disabled={pending}
-          className="rounded-full border border-black/[.08] px-5 py-2 transition-colors hover:bg-black/[.04] disabled:opacity-50 dark:border-white/[.145] dark:hover:bg-[#1a1a1a]"
-        >
-          Test connection
+
+      {error && <Note kind="error">{error}</Note>}
+      {tested && <Note kind="ok">Connected. You can save this connector.</Note>}
+
+      <div className="sticky bottom-0 -mx-6 flex items-center gap-2 border-t border-line bg-bg px-6 py-3">
+        <button type="button" onClick={handleTest} disabled={testing || !complete} className="dw-btn">
+          {testing ? "Testing…" : tested ? <Icon.Check size={14} /> : <Icon.Play size={13} />}
+          {testing ? "" : tested ? "Tested" : "Test connection"}
         </button>
-        <button
-          type="submit"
-          disabled={pending}
-          className="rounded-full bg-foreground px-5 py-2 text-background transition-colors hover:bg-[#383838] disabled:opacity-50 dark:hover:bg-[#ccc]"
-        >
-          {pending ? "Please wait…" : "Save data source"}
+        <button type="submit" disabled={pending || !tested} className="dw-btn dw-btn-primary flex-1">
+          {pending ? "Saving…" : "Save connector"}
         </button>
       </div>
     </form>

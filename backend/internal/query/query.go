@@ -200,7 +200,7 @@ func IsJoinType(t JoinType) bool {
 
 // JoinCondition equates one column already in the query — the base table, or
 // a table an earlier Join added — with one column of the table this join
-// adds. A column name is bare unless it's ambiguous, in which case it's
+// adds. A bare column name means the base table's column; a joined table's is
 // qualified as "table.column"; the same rule Field, Filter and Sort columns
 // follow.
 type JoinCondition struct {

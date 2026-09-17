@@ -573,10 +573,10 @@ export type QueryJoinCondition = {
 };
 
 // QueryJoin adds one more table to a report's query, matched to what's
-// already there by one or more equality conditions. Column names in `on` are
-// bare unless ambiguous, in which case they're qualified as "table.column" —
-// the same rule QueryField/QueryFilter/QuerySort columns follow once more
-// than one table is in play.
+// already there by one or more equality conditions. A bare column name in `on`
+// means the base table's column; a joined table's is qualified as
+// "table.column" — the same rule QueryField/QueryFilter/QuerySort columns
+// follow once more than one table is in play.
 export type QueryJoin = {
   table: string;
   type?: JoinType;

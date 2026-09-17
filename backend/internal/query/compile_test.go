@@ -2,6 +2,7 @@ package query
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -531,6 +532,52 @@ func TestCompileFiltersOnAJoinedColumn(t *testing.T) {
 	}
 	if compiled.Args[0] != "Acme" {
 		t.Errorf("got args %#v, want [Acme]", compiled.Args)
+	}
+}
+
+// The base table's own column keeps its bare name even when a joined table
+// has one by the same name — the join key itself usually does — so the columns
+// a report already named stay valid once a join is added.
+func TestCompileBareColumnPrefersBaseTable(t *testing.T) {
+	schema := datasource.Schema{Tables: []datasource.Table{
+		{Name: "ventas", Columns: []datasource.Column{
+			{Name: "id_vendedor", Type: "integer"},
+			{Name: "total", Type: "numeric(10,2)"},
+		}},
+		{Name: "vendedores", Columns: []datasource.Column{
+			{Name: "id_vendedor", Type: "integer"},
+			{Name: "nombre", Type: "text"},
+		}},
+	}}
+	spec := Spec{
+		Table: "ventas",
+		Joins: []Join{{Table: "vendedores", Type: JoinInner,
+			On: []JoinCondition{{Left: "id_vendedor", Right: "id_vendedor"}}}},
+		Fields: []Field{
+			{Column: "id_vendedor"},
+			{Column: "vendedores.nombre"},
+			{Column: "total", Aggregate: AggregateSum},
+		},
+		Filters: []Filter{{Column: "id_vendedor", Operator: OpGreater, Value: 10}},
+		Sorts:   []Sort{{Column: "id_vendedor"}},
+	}
+
+	compiled, err := Compile(spec, schema, DialectPostgres, referenceTime)
+	if err != nil {
+		t.Fatalf("Compile returned error: %v", err)
+	}
+	for _, want := range []string{
+		`INNER JOIN "vendedores" ON "ventas"."id_vendedor" = "vendedores"."id_vendedor"`,
+		`SELECT "ventas"."id_vendedor"`,
+		`WHERE "ventas"."id_vendedor" > $1`,
+		`ORDER BY "ventas"."id_vendedor"`,
+	} {
+		if !strings.Contains(compiled.Text, want) {
+			t.Errorf("got %s, want it to contain %s", compiled.Text, want)
+		}
+	}
+	if got := compiled.Columns; !slices.Equal(got, []string{"id_vendedor", "vendedores_nombre", "sum_total"}) {
+		t.Errorf("got columns %#v, want the base column unprefixed", got)
 	}
 }
 

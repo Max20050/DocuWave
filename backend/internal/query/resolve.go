@@ -134,7 +134,7 @@ func resolve(spec Spec, schema datasource.Schema, dialect Dialect, now time.Time
 	}
 
 	for _, filter := range spec.Filters {
-		predicates, err := resolveFilter(filter, columns, now)
+		predicates, err := resolveFilter(filter, columns, table, now)
 		if err != nil {
 			return resolved{}, err
 		}
@@ -144,7 +144,7 @@ func resolve(spec Spec, schema datasource.Schema, dialect Dialect, now time.Time
 	for _, sort := range spec.Sorts {
 		// Ordering by something the query doesn't select isn't portable — and on
 		// a grouped query it isn't answerable — so a sort has to name a field.
-		field, ok := selectedField(out.fields, columns, sort.Column, sort.Aggregate)
+		field, ok := selectedField(out.fields, columns, table, sort.Column, sort.Aggregate)
 		if !ok {
 			name := sort.Column
 			if name == "" {
@@ -269,11 +269,11 @@ func columnsFor(spec Spec, schema datasource.Schema, dialect Dialect) ([]resolve
 
 		conditions := make([]resolvedJoinCondition, 0, len(j.On))
 		for _, cond := range j.On {
-			left, err := lookupColumn(columns, cond.Left)
+			left, err := lookupColumn(columns, cond.Left, spec.Table)
 			if err != nil {
 				return nil, "", nil, fmt.Errorf("joining %s: %w", j.Table, err)
 			}
-			right, err := lookupColumn(joinColumns, cond.Right)
+			right, err := lookupColumn(joinColumns, cond.Right, j.Table)
 			if err != nil {
 				return nil, "", nil, fmt.Errorf("joining %s: %w", j.Table, err)
 			}
@@ -288,13 +288,14 @@ func columnsFor(spec Spec, schema datasource.Schema, dialect Dialect) ([]resolve
 	return columns, spec.Table, joins, nil
 }
 
-// lookupColumn finds a column by name, which may be bare — resolved against
-// every table in scope, so it must be unambiguous there — or qualified as
-// "table.column", needed once more than one joined table shares a column
-// name. Table names are matched longest-prefix first, since a schema-qualified
-// table name (Postgres, outside the default schema) is itself allowed to
-// contain a dot.
-func lookupColumn(columns []resolvedColumn, ref string) (resolvedColumn, error) {
+// lookupColumn finds a column by name, which may be bare — meaning the base
+// table's column, or, when the base table has no column by that name, the one
+// joined table that does — or qualified as "table.column", needed to reach a
+// joined table's column at all once the base table or another joined table
+// shares its name. Table names are matched longest-prefix first, since a
+// schema-qualified table name (Postgres, outside the default schema) is itself
+// allowed to contain a dot.
+func lookupColumn(columns []resolvedColumn, ref string, baseTable string) (resolvedColumn, error) {
 	if column, ok := lookupQualifiedColumn(columns, ref); ok {
 		return column, nil
 	}
@@ -304,6 +305,12 @@ func lookupColumn(columns []resolvedColumn, ref string) (resolvedColumn, error) 
 	tagged := false
 	for _, column := range columns {
 		if column.Name == ref {
+			// The base table's own column wins a bare name outright, so adding a
+			// join never invalidates a column the query already referenced — the
+			// joined table's is still reachable, qualified.
+			if column.Table != "" && column.Table == baseTable {
+				return column, nil
+			}
 			found = column
 			matches++
 			tagged = tagged || column.Table != ""
@@ -317,8 +324,9 @@ func lookupColumn(columns []resolvedColumn, ref string) (resolvedColumn, error) 
 		return found, nil
 	default:
 		// A source with no tables (Sheets, REST) can only repeat a name the way
-		// a spreadsheet header does; a source with tables repeats one only by
-		// joining two that both have it, which qualifying resolves.
+		// a spreadsheet header does; a source with tables reaches here only when
+		// two joined tables share a name the base table doesn't have, which
+		// qualifying resolves.
 		if tagged {
 			return resolvedColumn{}, fmt.Errorf("%w: %q is in more than one joined table — qualify it as table.column",
 				ErrInvalidSpec, ref)
@@ -367,7 +375,7 @@ func resolveField(field Field, columns []resolvedColumn, baseTable string) (reso
 		return resolvedField{aggregate: AggregateCount, counting: true, output: "row_count"}, nil
 	}
 
-	column, err := lookupColumn(columns, field.Column)
+	column, err := lookupColumn(columns, field.Column, baseTable)
 	if err != nil {
 		return resolvedField{}, err
 	}
@@ -401,7 +409,7 @@ func outputName(column resolvedColumn, baseTable string, aggregate Aggregate) st
 // same way a Field's own column would be, so a sort can name any selected
 // field — including one from a joined table — without repeating its aggregate
 // disambiguation logic.
-func selectedField(fields []resolvedField, columns []resolvedColumn, columnRef string, aggregate Aggregate) (resolvedField, bool) {
+func selectedField(fields []resolvedField, columns []resolvedColumn, baseTable, columnRef string, aggregate Aggregate) (resolvedField, bool) {
 	if columnRef == "" {
 		if aggregate != AggregateCount {
 			return resolvedField{}, false
@@ -414,7 +422,7 @@ func selectedField(fields []resolvedField, columns []resolvedColumn, columnRef s
 		return resolvedField{}, false
 	}
 
-	column, err := lookupColumn(columns, columnRef)
+	column, err := lookupColumn(columns, columnRef, baseTable)
 	if err != nil {
 		return resolvedField{}, false
 	}
@@ -441,13 +449,13 @@ func resolveLimit(limit int) (int, error) {
 }
 
 // resolveFilter validates one filter and reduces it to primitive comparisons.
-func resolveFilter(filter Filter, columns []resolvedColumn, now time.Time) ([]predicate, error) {
+func resolveFilter(filter Filter, columns []resolvedColumn, baseTable string, now time.Time) ([]predicate, error) {
 	arity, ok := operatorArities[filter.Operator]
 	if !ok {
 		return nil, fmt.Errorf("%w: %q is not a supported filter", ErrInvalidSpec, filter.Operator)
 	}
 
-	column, err := lookupColumn(columns, filter.Column)
+	column, err := lookupColumn(columns, filter.Column, baseTable)
 	if err != nil {
 		return nil, err
 	}

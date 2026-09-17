@@ -1,9 +1,12 @@
 # Production deploy
 
-`ci.yml` builds and pushes `backend`/`frontend` images to GHCR on every push
-to `main`. `deploy.yml` runs after that, SSHes into production, and pulls
-those images by their commit's `sha-<short-sha>` tag — no image is rebuilt
-during deploy.
+`ci.yml` builds and pushes `backend`/`frontend` images to GHCR while a PR is
+open (tagged `pr-<number>`). When the PR merges to `main`, CI does not
+rebuild — it promotes that same already-tested image to the `latest` and
+`sha-<short-sha>` tags via `docker buildx imagetools create`. `deploy.yml`
+then runs, SSHes into production, and pulls the `sha-<short-sha>` tag for
+that commit — the image running in production is byte-identical to the one
+tested in the PR.
 
 A `production` GitHub Environment already exists with a generated deploy
 keypair; its private half is stored as the `SSH_PRIVATE_KEY` secret. The

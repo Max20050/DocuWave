@@ -1,0 +1,43 @@
+# Deploys to production by pulling the images `ci.yml` already built and
+# pushed to GHCR for this commit — no rebuild happens here.
+#
+# Runs after CI finishes on main. Needs these secrets set on the `production`
+# environment before it can do anything (see docs/production-deploy.md):
+#   SSH_HOST, SSH_USER, SSH_PRIVATE_KEY, DEPLOY_PATH
+# Optional: SSH_PORT (defaults to 22)
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+jobs:
+  deploy:
+    name: Deploy to production
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Resolve image tag
+        id: image
+        run: echo "tag=sha-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Pull & restart via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: IMAGE_TAG
+          script: |
+            cd ${{ secrets.DEPLOY_PATH }}
+            export IMAGE_TAG
+            docker compose -f docker-compose.registry.yml pull
+            docker compose -f docker-compose.registry.yml up -d
+            docker image prune -f
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}

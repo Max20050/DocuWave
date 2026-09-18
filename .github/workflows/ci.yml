@@ -159,15 +159,27 @@ jobs:
       # No rebuild: repoints the already-tested pr-<number> image (built and
       # pushed while the PR was open) at the latest/sha tags production pulls.
       - name: Promote backend image
+        env:
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
         run: |
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PR number: $PR_NUMBER" >&2
+            exit 1
+          fi
           docker buildx imagetools create \
             -t ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-backend:latest \
             -t ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-backend:sha-${GITHUB_SHA::7} \
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-backend:pr-${{ needs.resolve-pr.outputs.pr_number }}
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-backend:pr-"$PR_NUMBER"
 
       - name: Promote frontend image
+        env:
+          PR_NUMBER: ${{ needs.resolve-pr.outputs.pr_number }}
         run: |
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "Invalid PR number: $PR_NUMBER" >&2
+            exit 1
+          fi
           docker buildx imagetools create \
             -t ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-frontend:latest \
             -t ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-frontend:sha-${GITHUB_SHA::7} \
-            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-frontend:pr-${{ needs.resolve-pr.outputs.pr_number }}
+            ${{ env.REGISTRY }}/${{ steps.repo.outputs.name }}-frontend:pr-"$PR_NUMBER"

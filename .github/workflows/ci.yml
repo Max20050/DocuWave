@@ -18,15 +18,34 @@ jobs:
     name: Resolve merged PR
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       pr_number: ${{ steps.pr.outputs.number }}
     steps:
+      # Looks the PR up via the API so merge, squash and rebase merges all work.
+      # Only reports a PR when the merged tree is identical to the PR head's
+      # tree; otherwise (e.g. main moved after the PR was last tested) the
+      # pr-<number> image isn't what was merged, so the build jobs run instead.
       - id: pr
-        run: |
-          number=$(echo "$MESSAGE" | grep -oP '(?<=Merge pull request #)\d+' | head -1 || true)
-          echo "number=$number" >> "$GITHUB_OUTPUT"
         env:
-          MESSAGE: ${{ github.event.head_commit.message }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          number=""
+          pr=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0] | "\(.number) \(.head.sha)"' 2>/dev/null || true)
+          if [[ "$pr" =~ ^([0-9]+)\ ([0-9a-f]{40})$ ]]; then
+            merged_tree=$(gh api "repos/$REPO/git/commits/$SHA" --jq .tree.sha)
+            head_tree=$(gh api "repos/$REPO/git/commits/${BASH_REMATCH[2]}" --jq .tree.sha)
+            if [[ "$merged_tree" == "$head_tree" ]]; then
+              number="${BASH_REMATCH[1]}"
+            else
+              echo "Merged tree differs from PR head tree; falling back to a fresh build."
+            fi
+          fi
+          echo "number=$number" >> "$GITHUB_OUTPUT"
 
   docker-backend:
     name: Docker — backend lint, test, build & publish
